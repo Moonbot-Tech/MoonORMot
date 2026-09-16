@@ -139,9 +139,9 @@ unit mormot.core.fpcx64mm;
   {$define FPCMM_MS_ARENAS}    // all classes arena-sharded (PO2 6/5)
   {$define FPCMM_MS_TABLE}     // size classes up to 17504
   {$define FPCMM_MS_PERTHREAD} // per-thread arena mapping
+  {$define FPCMM_MS_MEDIUM}    // user medium arenas with immutable pool owner
+  {$define FPCMM_ASSUMEMULTITHREAD} // MoonBot services are always multi-threaded
   {$ifdef LINUX}
-    {$define FPCMM_MS_MEDIUM}  // user medium arenas with immutable pool owner
-    {$define FPCMM_ASSUMEMULTITHREAD} // MoonBot services are always multi-threaded
     {$define FPCMM_MS_LINUX_FASTGET} // state-equivalent MoonBot GetMem fast path
   {$endif LINUX}
 {$endif FPCMM_MOONSHARD}
@@ -171,6 +171,22 @@ unit mormot.core.fpcx64mm;
 // this whole unit will compile as void
 // - may be defined e.g. when compiled as Design-Time Lazarus package
 {.$define FPCMM_DISABLE}
+
+// Product builds define this switch to reject an incomplete MoonBot profile.
+{$ifdef MOONBOT_MM_PROFILE_REQUIRED}
+  {$ifdef FPCMM_DISABLE}
+    {$fatal MoonBot MM profile forbids FPCMM_DISABLE}
+  {$endif FPCMM_DISABLE}
+  {$ifdef FPCMM_STANDALONE}
+    {$fatal MoonBot MM profile forbids FPCMM_STANDALONE}
+  {$endif FPCMM_STANDALONE}
+  {$ifndef FPCMM_BOOSTER}
+    {$fatal MoonBot MM profile requires FPCMM_BOOSTER}
+  {$endif FPCMM_BOOSTER}
+  {$ifndef FPCMM_MOONSHARD}
+    {$fatal MoonBot MM profile requires FPCMM_MOONSHARD}
+  {$endif FPCMM_MOONSHARD}
+{$endif MOONBOT_MM_PROFILE_REQUIRED}
 
 interface
 
@@ -437,6 +453,7 @@ const
     {$ifdef FPCMM_SMALLNOTWITHMEDIUM}+ ' smallpool'
       {$ifdef FPCMM_MULTIPLESMALLNOTWITHMEDIUM} + 's' {$endif} {$endif}
     {$ifdef FPCMM_TINYPERTHREAD}     + ' perthrd'  {$endif}
+    {$ifdef FPCMM_MS_MEDIUM}         + ' medarena' {$endif}
     {$ifdef FPCMM_ERMS}              + ' erms'        {$endif}
     {$ifdef FPCMM_DEBUG}             + ' debug'       {$endif}
     {$ifdef FPCMM_REPORTMEMORYLEAKS} + ' repmemleak'  {$endif};
@@ -521,6 +538,11 @@ implementation
 const
   kernel32 = 'kernel32.dll';
 
+  {$ifdef FPCMM_MS_MEDIUM}
+  MediumBlockAlignment     = 1 shl 21; // resolve pool header from any block
+  MediumBlockAlignmentMask = MediumBlockAlignment - 1;
+  {$endif FPCMM_MS_MEDIUM}
+
   MEM_COMMIT   = $1000;
   MEM_RESERVE  = $2000;
   MEM_RELEASE  = $8000;
@@ -557,9 +579,33 @@ procedure SwitchToThread;
   stdcall; external kernel32 name 'SwitchToThread';
 
 function OsAllocMedium(Size: PtrInt): pointer; inline;
+{$ifdef FPCMM_MS_MEDIUM}
+var
+  raw: pointer;
+{$endif FPCMM_MS_MEDIUM}
 begin
+  {$ifdef FPCMM_MS_MEDIUM}
+  // Keep the reservation alive around the aligned committed pool. This avoids
+  // a release/re-reserve race and lets FreeMem recover its immutable owner by
+  // masking any medium-block address to the pool header.
+  raw := VirtualAlloc(nil, Size + MediumBlockAlignment,
+    MEM_RESERVE, PAGE_READWRITE);
+  if raw = nil then
+  begin
+    result := nil;
+    exit;
+  end;
+  result := pointer((PtrUInt(raw) + MediumBlockAlignmentMask) and
+    not MediumBlockAlignmentMask);
+  if VirtualAlloc(result, Size, MEM_COMMIT, PAGE_READWRITE) = nil then
+  begin
+    VirtualFree(raw, 0, MEM_RELEASE);
+    result := nil;
+  end;
+  {$else}
   // bottom-up allocation to reduce fragmentation
   result := VirtualAlloc(nil, Size, MEM_COMMIT, PAGE_READWRITE);
+  {$endif FPCMM_MS_MEDIUM}
 end;
 
 function OsAllocLarge(Size: PtrInt): pointer; inline;
@@ -572,8 +618,18 @@ begin
 end;
 
 procedure OsFreeMedium(ptr: pointer; Size: PtrInt); inline;
+{$ifdef FPCMM_MS_MEDIUM}
+var
+  nfo: TMemInfo;
+{$endif FPCMM_MS_MEDIUM}
 begin
+  {$ifdef FPCMM_MS_MEDIUM}
+  FillChar(nfo, SizeOf(nfo), 0);
+  if VirtualQuery(ptr, @nfo, SizeOf(nfo)) = SizeOf(nfo) then
+    VirtualFree(pointer(nfo.AllocationBase), 0, MEM_RELEASE);
+  {$else}
   VirtualFree(ptr, 0, MEM_RELEASE);
+  {$endif FPCMM_MS_MEDIUM}
 end;
 
 procedure OsFreeLarge(ptr: pointer; Size: PtrInt); forward;
@@ -989,6 +1045,9 @@ const
   MediumBlockPoolSizeMem       = 20 * 64 * 1024;
   MediumBlockPoolSize          = MediumBlockPoolSizeMem - 16;
   {$ifdef FPCMM_MS_MEDIUM}
+  {$if MediumBlockPoolSizeMem > MediumBlockAlignment}
+    {$error MediumBlockAlignment must cover a complete medium pool}
+  {$ifend}
   NumMediumBlockArenasPO2      = 2; // 4 arenas
   NumMediumBlockArenas         = 1 shl NumMediumBlockArenasPO2;
   {$endif FPCMM_MS_MEDIUM}
@@ -3379,8 +3438,18 @@ asm
         cmp     byte ptr [rax], false
         je      @MediumArenaSelected
         mov     edx, $9E3779B1 // same per-thread hash as tiny/small arenas
+        {$ifdef LINUX}
         // mov rax,fs:[$00000010] = inlined pthread_self on Linux X86_64
         db $64, $48, $8B, $04, $25, $10, $00, $00, $00
+        {$else}
+        {$ifdef WINDOWS}
+        // inlined GetThreadID from the Win64 TEB (tested on Windows 7-11)
+        db $65, $48, $8B, $04, $25, $30, $00, $00, $00
+        mov     eax, [rax + $48]
+        {$else}
+        unsupported
+        {$endif WINDOWS}
+        {$endif LINUX}
         mul     edx
         shr     eax, 32 - NumMediumBlockArenasPO2
         mov     r9d, eax
@@ -3471,7 +3540,12 @@ asm
 @AllocateNewSequentialFeedForMedium:
         {$ifdef MSWINDOWS}
         mov     ecx, ebx
+        {$ifdef FPCMM_MS_MEDIUM}
+        mov     rbx, r10 // preserve selected arena across the Pascal call
+        mov     rdx, rbx
+        {$else}
         lea     rdx, [rip + MediumBlockInfo]
+        {$endif FPCMM_MS_MEDIUM}
         {$else}
         mov     edi, ebx
         {$ifdef FPCMM_MS_MEDIUM}
@@ -3837,9 +3911,17 @@ asm
         mov     r10, rcx
         and     r10, not MediumBlockAlignmentMask
         mov     r10, [r10 + TMediumBlockPoolHeader.Reserved1]
+        {$ifdef NOSFRAME}
         jmp     FreeMediumBlock
 @FreeLarge:
         jmp     FreeLargeBlock
+        {$else}
+        call    FreeMediumBlock
+        jmp     @Quit
+@FreeLarge:
+        call    FreeLargeBlock
+        jmp     @Quit
+        {$endif NOSFRAME}
         {$else}
         lea     r10, [rip + MediumBlockInfo]
         {$ifdef NOSFRAME}
@@ -4505,7 +4587,7 @@ var
 begin
   W(txt);
   kk := nil;
-  n := 1 shl 50;
+  n := PtrUInt(1) shl 50;
   for j := 0 to high(K_) do
     if i >= n then
     begin
@@ -5236,11 +5318,6 @@ end;
 {$I+}
 
 {$ifndef FPCMM_STANDALONE}
-
-procedure MoonBotFpcx64mmAbi20260806_01;
-  public name 'MOONBOT_FPCX64MM_ABI_20260806_01';
-begin
-end;
 
 const
   NewMM: TMemoryManager = (
