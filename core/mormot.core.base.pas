@@ -1349,10 +1349,48 @@ function GetInt64(P: PUtf8Char; var err: integer): Int64; overload;
 // was successful (same as the standard val function)
 function GetQWord(P: PUtf8Char; var err: integer): QWord;
 
+{$ifdef ASMX64}
+  {$ifdef ISDELPHI}
+    {$ifdef WIN64ABI}
+      {$define NUMBERS_ASMX64} // Delphi: Win64 only
+    {$endif WIN64ABI}
+  {$else}
+    {$define NUMBERS_ASMX64}   // FPC x86-64: Win64 or SysV
+  {$endif ISDELPHI}
+{$endif ASMX64}
 
+{$ifdef NUMBERS_ASMX64}
+// Shared by the whole x86-64 string, JSON and integer parsers.
+procedure NumberSimdData;
+var
+  // OR-ed into the page offset: 4096 selects the SSE2 byte path without an extra branch.
+  NumberNoSimd: cardinal = 4096;
+const
+  NUMBER_BIAS = 0;
+  NUMBER_THRESHOLD = 16;
+  NUMBER_ASCII0 = 32;
+  NUMBER_TEN = 48;
+  NUMBER_HUNDRED = 64;
+  NUMBER_TENTHOUSAND = 80;
+  NUMBER_SIGN = 96;
+  NUMBER_E8 = 104;
+  NUMBER_CTRLINT = 96;               // rows 1..15 at 112..351 (row 0 overlaps the sign row, never read)
+  NUMBER_CTRLDOT = 336;              // rows 1..15 at 352..591 (row 0 overlaps ctrlInt row 15, never read)
+  NUMBER_CTRLSHORT = 576;            // rows 1..8 at 592..719 (row 0 overlaps ctrlDot row 15, never read)
+  NUMBER_POWERS = 720;               // 10^0 .. 10^15 at 720..847
+  NUMBER_SCALE = 848;                // 2^512
+  NUMBER_INVSCALE = 856;             // 2^-512
+  NUMBER_MAXSCALED = 864;            // MaxDouble * 2^-512
+  NUMBER_MINBITS = 872;              // the smallest subnormal
+  NUMBER_OVERFLOW = 880;             // floor of the overflow midpoint / 10^289
+  NUMBER_UNDERFLOW = 888;            // floor of the underflow midpoint / 10^-342
+  NUMBER_EXACTINTEGER = 896;         // 2^53 as a double
+  NUMBER_INV5 = 904;                 // inverse of 5 modulo 2^64 (the JSON routine's strip test)
+  NUMBER_STRIPLIMIT = 912;           // floor((2^64 - 1) / 10)
+{$else}
 // Retained-mantissa conversion for the Pascal parsers on other architectures.
 function DecimalToDouble(Mantissa: UInt64; Exponent: PtrInt; Negative: boolean): double;
-
+{$endif NUMBERS_ASMX64}
 
 /// get the extended floating point value stored in P^
 // - set the err content to the index of any faulty character, 0 if conversion
@@ -4377,11 +4415,13 @@ const
 
 implementation
 
+{$ifndef NUMBERS_ASMX64}
 uses
   {$ifdef ISDELPHI20062007}
   Windows,
   {$endif ISDELPHI20062007}
   Math;
+{$endif NUMBERS_ASMX64}
 
 {$ifdef FPC}
   // globally disable some FPC paranoid warnings - rely on x86_64 as reference
@@ -6274,6 +6314,7 @@ end;
 
 {$endif CPU64}
 
+{$ifndef NUMBERS_ASMX64}
 // Bounded conversion: no input rescan or discarded-tail recovery.
 function DecimalLeadingZeros(A: UInt64): Integer;
 begin
@@ -6563,6 +6604,7 @@ begin
   result := PDouble(@bits)^;
 end;
 
+{$endif NUMBERS_ASMX64}
 
 function GetExtended(P: PUtf8Char): TSynExtended;
 var
@@ -6586,6 +6628,7 @@ end;
 
 {$ifndef CPU32DELPHI}
 
+{$ifndef NUMBERS_ASMX64}
 function GetExtended(P: PUtf8Char; out err: integer): TSynExtended;
 const
   Scale: double = 1.3407807929942597e154; // 2^512
@@ -6792,6 +6835,7 @@ e:  err := 1; // return the (partial) value even if not ended with #0
   result := result * v64;
 end;
 
+{$endif NUMBERS_ASMX64}
 
 {$endif CPU32DELPHI}
 
@@ -10223,6 +10267,10 @@ begin
   end;
   {$endif ASMX64}
   // redirect some CPU-aware functions
+  {$ifdef NUMBERS_ASMX64}
+  if cfSSSE3 in CpuFeatures then
+    NumberNoSimd := 0;
+  {$endif NUMBERS_ASMX64}
   {$ifdef ASMX86} 
   {$ifndef HASNOSSE2}
   {$ifdef WITH_ERMS}

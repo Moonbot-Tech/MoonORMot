@@ -10037,6 +10037,9 @@ exponent:         inc(Json); // inlined custom GetInteger()
   end;
 end;
 
+{$if defined(ASMX64) and (defined(WIN64ABI) or not defined(ISDELPHI))}
+{$I mormot.core.variants.asmx64.number.inc}
+{$else}
 function GetNumericVariantFromJson(Json: PUtf8Char; var Value: TVarData;
   AllowVarDouble: boolean): PUtf8Char;
 var
@@ -10205,6 +10208,7 @@ begin
     exit;
   result := Json; // returns the first char after the parsed number
 end;
+{$ifend}
 
 procedure UniqueVariant(Interning: TRawUtf8Interning; var aResult: variant;
   aText: PUtf8Char; aTextLen: PtrInt; aAllowVarDouble: boolean);

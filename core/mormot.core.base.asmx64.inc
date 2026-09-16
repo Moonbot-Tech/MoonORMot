@@ -697,6 +697,11 @@ function StrUInt32(P: PAnsiChar; val: PtrUInt): PAnsiChar;
         mov     rax, P
 end;
 
+{$ifdef NUMBERS_ASMX64}
+{$I mormot.core.base.asmx64.number.data.inc}
+{$I mormot.core.base.asmx64.number.string.inc}
+{$endif NUMBERS_ASMX64}
+
 {$endif ASMX64}
 
 {$ifdef CPUX64ASM} /// proper compilation on FPC and Delphi XE7+
