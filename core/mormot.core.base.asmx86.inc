@@ -97,6 +97,7 @@ asm
 @nv:    movntdq dqword ptr [eax + edx], xmm0 // non-temporal fill 16 bytes
         add     edx, 16
         jl      @nv
+        sfence // publish streaming writes before returning to a caller's unlock
         ret
 {$endif HASNOSSE2}
 {$ifdef WITH_ERMSASM}

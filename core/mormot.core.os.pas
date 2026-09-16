@@ -9344,7 +9344,11 @@ end;
 
 procedure TRWLightLock.WriteUnLock;
 begin
+  {$ifdef CPUINTEL}
+  Flags := 0; // exclusive writer owns Flags=1; Intel stores preserve release order
+  {$else}
   LockedDec(Flags, 1);
+  {$endif CPUINTEL}
 end;
 
 procedure TRWLightLock.WriteLockSpin;
