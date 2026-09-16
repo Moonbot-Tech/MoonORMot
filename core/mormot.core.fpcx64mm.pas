@@ -5007,20 +5007,15 @@ var
   medium, nextmedium: PMediumBlockPoolHeader;
   bin: PMediumFreeBlock;
   i: PtrInt;
-  {$ifndef LINUX}
-  list, next: PPointer;
-  {$else}
   {$ifdef FPCMM_REPORTMEMORYLEAKS}
   list, next: PPointer;
   {$endif FPCMM_REPORTMEMORYLEAKS}
-  {$endif LINUX}
 begin
-  {$ifdef LINUX}
   {$ifdef FPCMM_REPORTMEMORYLEAKS}
   list := Info.LastFree;
   {$endif FPCMM_REPORTMEMORYLEAKS}
   Info.LastFree := nil;
-  // All pools owned by Info are unmapped just below. Calling the generic
+  // All pools owned by Info are released just below. Calling the generic
   // _FreeMem() dispatcher here is both redundant and wrong for a pending
   // small-pool medium block: IsSmallBlockPoolInUseFlag has the same value as
   // IsLargeBlockFlag, so _FreeMem() would route it to FreeLargeBlock.
@@ -5033,15 +5028,6 @@ begin
     list := next;
   end;
   {$endif FPCMM_REPORTMEMORYLEAKS}
-  {$else}
-  list := Info.LastFree;
-  while list <> nil do
-  begin
-    next := list^;
-    _FreeMem(list); // not a leak, just an unexpected context
-    list := next;
-  end;
-  {$endif LINUX}
   medium := Info.PoolsCircularList.NextMediumBlockPoolHeader;
   while medium <> @Info.PoolsCircularList do
   begin
@@ -5179,25 +5165,19 @@ begin
   {$ifdef FPCMM_REPORTMEMORYLEAKS}
   leaks := 0;
   {$endif FPCMM_REPORTMEMORYLEAKS}
-  {$ifdef LINUX}
   p := @SmallBlockInfo;
-  {$endif LINUX}
   for i := 0 to high(SmallBlockInfo.SmallLastFree) do
   begin
     list := SmallBlockInfo.SmallLastFree[i];
-    {$ifdef LINUX}
     SmallBlockInfo.SmallLastFree[i] := nil;
     p^.LastFreeCount := 0;
-    {$endif LINUX}
     while list <> nil do
     begin
       next := list^;
       _FreeMem(list); // not a leak, just an unexpected context
       list := next;
     end;
-    {$ifdef LINUX}
     inc(p);
-    {$endif LINUX}
   end;
   p := @SmallBlockInfo;
   for i := 1 to NumSmallInfoBlock do
