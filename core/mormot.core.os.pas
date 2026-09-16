@@ -9332,12 +9332,8 @@ begin
 end;
 
 function TRWLightLock.TryWriteLock: boolean;
-var
-  f: PtrUInt;
 begin
-  f := Flags and not 1; // bit 0=WriteLock, >0=ReadLock
-  result := (Flags = f) and
-            LockedExc(Flags, f + 1, f);
+  result := LockedExc(Flags, 1, 0); // no active reader or writer
 end;
 
 procedure TRWLightLock.WriteLock;
@@ -9353,12 +9349,16 @@ end;
 
 procedure TRWLightLock.WriteLockSpin;
 var
-  spin: PtrUInt;
+  spin, f: PtrUInt;
 begin
   spin := SPIN_COUNT;
   repeat
     spin := DoSpin(spin);
-  until TryWriteLock;
+    f := Flags and not 1; // acquire the writer bit to stop new readers
+  until (Flags = f) and
+        LockedExc(Flags, f + 1, f);
+  while Flags <> 1 do // wait for all existing readers to leave
+    spin := DoSpin(spin);
 end;
 
 
