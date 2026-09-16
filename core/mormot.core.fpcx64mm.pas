@@ -974,7 +974,10 @@ asm
         mov     _9,  r9
         mov     _10, r10
         mov     _11, r11
-        {$ifdef FPCMM_SLEEPTSC}
+        // the rdtsc census needs the SleepCycles field of FPCMM_DEBUG:
+        // FPCMM_SLEEPTSC alone (or with FPCMM_BOOSTER, which undefines
+        // FPCMM_DEBUG) keeps the rdtsc-timed spinning but not the census
+        {$if defined(FPCMM_SLEEPTSC) and defined(FPCMM_DEBUG)}
         rdtsc // returns the TSC in EDX:EAX
         shl     rdx, 32
         or      rax, rdx
@@ -4882,7 +4885,9 @@ begin
     if SleepCount <> 0 then
     begin
       K(' Total Sleep: count=', SleepCount);
-      {$ifdef FPCMM_SLEEPTSC} K(' rdtsc=', SleepCycles); {$endif}
+      {$if defined(FPCMM_SLEEPTSC) and defined(FPCMM_DEBUG)}
+      K(' rdtsc=', SleepCycles);
+      {$endif FPCMM_SLEEPTSC}
       LF;
     end;
     if SmallGetmemSleepCount <> 0 then
