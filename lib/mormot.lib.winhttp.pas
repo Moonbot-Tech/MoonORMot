@@ -1186,7 +1186,7 @@ type
 
 const
   hHttpApi2First = hCancelHttpRequest;
-  HttpNames: array[THttpApis] of PChar = (
+  HttpNames: array[THttpApis] of PAnsiChar = (
     'HttpInitialize',
     'HttpTerminate',
     'HttpCreateHttpHandle',
@@ -1592,7 +1592,7 @@ const
   hWebSocketApiFirst = hWebSocketCompleteUpgrade;
 
 const
-  WinHttpNames: array[TWinHttpApis] of PChar = (
+  WinHttpNames: array[TWinHttpApis] of PAnsiChar = (
     'WinHttpOpen',
     'WinHttpSetStatusCallback',
     'WinHttpConnect',
@@ -1804,7 +1804,7 @@ type
 
 const
   WEBSOCKET_DLL = 'websocket.dll';
-  WebSocketNames: array[TWebSocketApis] of PChar = (
+  WebSocketNames: array[TWebSocketApis] of PAnsiChar = (
     'WebSocketAbortHandle',
     'WebSocketBeginClientHandshake',
     'WebSocketBeginServerHandshake',
