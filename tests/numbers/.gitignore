@@ -1,0 +1,5 @@
+/bin/
+/dcu*/
+*.log
+/results/
+/__pycache__/
