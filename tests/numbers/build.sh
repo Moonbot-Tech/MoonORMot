@@ -18,6 +18,7 @@ if [[ "${2:-}" == unicode ]]; then
   options+=(-dUNICODERTL -dENABLE_DELPHI_RTTI -dMOONCOMPILER_DELPHI_CALLBACK_TYPES)
   mode="$mode-unicode"
 fi
-mkdir -p "dcu-$mode" bin
+mkdir -p "dcu-$mode" "dcu-$mode-sse2" bin
 "$compiler" "${options[@]}" -FEbin "-FUdcu-$mode" "-olibNumericLibrary-$mode.so" NumericLibrary.dpr
-sha256sum "$compiler" "bin/libNumericLibrary-$mode.so"
+"$compiler" "${options[@]}" -dMORMOT_NUMERIC_FORCE_SSE2 -FEbin "-FUdcu-$mode-sse2" "-olibNumericLibrary-$mode-sse2.so" NumericLibrary.dpr
+sha256sum "$compiler" "bin/libNumericLibrary-$mode.so" "bin/libNumericLibrary-$mode-sse2.so"

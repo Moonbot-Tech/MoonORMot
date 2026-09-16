@@ -32,22 +32,9 @@ begin
     2: result := @B;
     3: result := @T;
     4: result := @K;
-    {$if defined(ASMX64) and (defined(WIN64ABI) or not defined(ISDELPHI))}
-    5: result := @NumberSimdData;
-    {$ifend}
   else
     result := nil;
   end;
-end;
-
-function SetSimd(Value: integer): integer; cdecl;
-begin
-  {$if defined(ASMX64) and (defined(WIN64ABI) or not defined(ISDELPHI))}
-  result := ord(NumberNoSimd = 0);
-  NumberNoSimd := ord(Value = 0) shl 12;
-  {$else}
-  result := 0;
-  {$ifend}
 end;
 
 function SetRounding(Mode: integer): integer; cdecl;
@@ -84,7 +71,7 @@ begin
 end;
 
 exports
-  ParserAddress, SetSimd, SetRounding, CheckDocument;
+  ParserAddress, SetRounding, CheckDocument;
 
 begin
   SetRoundMode(rmNearest);

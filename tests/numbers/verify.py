@@ -1,7 +1,7 @@
 """Deterministic, byte-exact five-entry qualification across libraries, paths and ABIs.
 
-python verify.py LIBRARY [--reference WHOLE.dll] [--corpus LAB/data] [--write result.json]
-python verify.py LIBRARY --corpus DATA --expect win64.json
+python verify.py LIBRARY --sse2 SSE2_LIBRARY [--reference WHOLE.dll] [--corpus LAB/data] [--write result.json]
+python verify.py LIBRARY --sse2 SSE2_LIBRARY --corpus DATA --expect win64.json
 
 The digest contains value bits, errors, JSON types/cursors, and both AllowDouble states.
 No library address or padding byte enters it. A mismatch fails the process.
@@ -69,48 +69,44 @@ def record(lib, p, bound):
 
 def regressions(lib, pages):
     # Representable exponent, but adding the fractional scale overflows Int64.
-    for simd in (0, 1):
-        lib.lib.SetSimd(simd)
-        for tail in (False, True):
-            for raw in (b'0.00e-9223372036854775807', b'0e9999', b'-0.00e-9223372036854775807',
-                    b'0.00e-9223372036854775808', b'-0e-9223372036854775808'):
-                p = pages.put(raw, tail)
-                e = C.c_int(-1)
-                value = lib.string(p, C.byref(e))
-                assert value == 0 and e.value == 0, (raw, value, e.value)
-                assert struct.pack('<d', value) == struct.pack('<Q', (1 << 63) if raw[0] == 45 else 0)
-                var = (C.c_ubyte * 32)()
-                assert lib.json(p, C.byref(var), True) == p + len(raw), raw
-                assert struct.unpack_from('<Q', var, 8)[0] == 0, raw
-            for raw in (b'0e9223372036854775808', b'0e-9223372036854775809', b'0e-92233720368547758080'):
-                p = pages.put(raw, tail)
-                e = C.c_int(-1)
-                lib.string(p, C.byref(e))
-                assert e.value != 0, ('overflowing exponent accepted', raw)
-                var = (C.c_ubyte * 32)()
-                assert not lib.json(p, C.byref(var), True), ('overflowing JSON exponent accepted', raw)
+    for tail in (False, True):
+        for raw in (b'0.00e-9223372036854775807', b'0e9999', b'-0.00e-9223372036854775807',
+                b'0.00e-9223372036854775808', b'-0e-9223372036854775808'):
+            p = pages.put(raw, tail)
+            e = C.c_int(-1)
+            value = lib.string(p, C.byref(e))
+            assert value == 0 and e.value == 0, (raw, value, e.value)
+            assert struct.pack('<d', value) == struct.pack('<Q', (1 << 63) if raw[0] == 45 else 0)
+            var = (C.c_ubyte * 32)()
+            assert lib.json(p, C.byref(var), True) == p + len(raw), raw
+            assert struct.unpack_from('<Q', var, 8)[0] == 0, raw
+        for raw in (b'0e9223372036854775808', b'0e-9223372036854775809', b'0e-92233720368547758080'):
+            p = pages.put(raw, tail)
+            e = C.c_int(-1)
+            lib.string(p, C.byref(e))
+            assert e.value != 0, ('overflowing exponent accepted', raw)
+            var = (C.c_ubyte * 32)()
+            assert not lib.json(p, C.byref(var), True), ('overflowing JSON exponent accepted', raw)
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('library', type=Path)
+    ap.add_argument('--sse2', type=Path, required=True)
     ap.add_argument('--reference', type=Path)
     ap.add_argument('--corpus', type=Path)
     ap.add_argument('--random', type=int, default=100000)
     ap.add_argument('--write', type=Path)
     ap.add_argument('--expect', type=Path)
     args = ap.parse_args()
-    lib = Library(args.library)
+    libraries = [('native', Library(args.library)), ('sse2', Library(args.sse2))]
     reference = Library(args.reference) if args.reference else None
     pages = Pages()
     texts = list(cases(args.random, args.corpus))
     rows = []
     start = time.monotonic()
     try:
-        regressions(lib, pages)
-        for simd in (1, 0):
-            lib.lib.SetSimd(simd)
-            if reference:
-                reference.lib.SetSimd(simd)
+        for path, lib in libraries:
+            regressions(lib, pages)
             if hasattr(lib.lib, 'CheckDocument'):
                 assert lib.lib.CheckDocument() == 0, 'complete JSON document integration'
             for tail in (False, True):
@@ -121,25 +117,24 @@ def main():
                     got = record(lib, p, bound)
                     if reference:
                         expected = record(reference, p, bound)
-                        assert got == expected, (simd, tail, i, raw, got.hex(), expected.hex())
+                        assert got == expected, (path, tail, i, raw, got.hex(), expected.hex())
                     digest.update(got)
-                row = dict(simd=simd, guard=tail, cases=len(texts), sha256=digest.hexdigest())
+                row = dict(path=path, guard=tail, cases=len(texts), sha256=digest.hexdigest())
                 print(row, flush=True)
                 rows.append(row)
-        assert len({r['sha256'] for r in rows}) == 1, 'SIMD/byte/page paths disagree'
+        assert len({r['sha256'] for r in rows}) == 1, 'native/SSE2/page paths disagree'
         # Null input and all JSON signed-zero paths, including directed modes.
-        record(lib, 0, 0)
-        for mode in range(4):
-            lib.lib.SetRounding(mode)
-            for simd in (0, 1):
-                lib.lib.SetSimd(simd)
+        for _, lib in libraries:
+            record(lib, 0, 0)
+            for mode in range(4):
+                lib.lib.SetRounding(mode)
                 for raw in (b'-0.0', b'-0e5', b'-0.00000000000000000000000'):
                     for tail in (False, True):
                         p = pages.put(raw, tail)
                         var = (C.c_ubyte * 32)()
                         assert lib.json(p, C.byref(var), True)
                         assert struct.unpack_from('<Q', var, 8)[0] == 0, 'JSON minus zero'
-        lib.lib.SetRounding(0)
+            lib.lib.SetRounding(0)
     finally:
         pages.close()
     if args.expect:
@@ -148,7 +143,7 @@ def main():
     if args.write:
         args.write.parent.mkdir(parents=True, exist_ok=True)
         args.write.write_text(json.dumps(result, indent=2) + '\n')
-    print('NUMERIC_MATRIX_PASS', len(texts) * 4, 'records;', round(result['seconds'], 2), 'seconds')
+    print('NUMERIC_MATRIX_PASS', len(texts) * len(rows), 'records;', round(result['seconds'], 2), 'seconds')
 
 if __name__ == '__main__':
     main()

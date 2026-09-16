@@ -8,7 +8,6 @@ class Library:
         self.lib = C.CDLL(str(self.path))
         self.lib.ParserAddress.argtypes = [C.c_int]
         self.lib.ParserAddress.restype = C.c_void_p
-        self.lib.SetSimd.argtypes = [C.c_int]
         self.lib.SetRounding.argtypes = [C.c_int]
         self.addresses = [self.lib.ParserAddress(i) for i in range(5)]
         self.string = C.CFUNCTYPE(C.c_double, C.c_void_p, C.POINTER(C.c_int))(self.addresses[0])

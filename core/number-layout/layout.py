@@ -94,8 +94,7 @@ def generated(name):
 def check(dump, abi):
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     md.detail = True
-    assert dump['table']['address'] % 16 == 0, 'unaligned SIMD table'
-    assert len(bytes.fromhex(dump['table']['bytes'])) == 920
+    shared_table = None
     for name in NAMES:
         wr, sr, win, linux = plans(name)
         r, seq = (sr, linux) if abi == 'sysv' else (wr, win)
@@ -107,6 +106,7 @@ def check(dump, abi):
         prev = None
         loop_ends = {}
         branches = []
+        tables = set()
         count = 0
         for idx, (text, size) in enumerate(seq):
             if text == 'PAD':
@@ -131,6 +131,10 @@ def check(dump, abi):
             assert got and got.size == size, (name, hex(off), text, size,
                 None if not got else (got.mnemonic, got.op_str, got.size, got.bytes.hex()))
             assert ALIASES.get(mn, mn) == ALIASES.get(got.mnemonic, got.mnemonic), (name, hex(off), text, got.mnemonic)
+            if 'NumberSimdData' in text:
+                table = got.address + got.size + got.operands[1].mem.disp
+                assert table % 16 == 0, (name, 'unaligned internal SIMD table', hex(table))
+                tables.add(table)
             if mn in plan_hot.J:
                 start = prev[1] if prev and prev[0] in plan_hot.FUSE and mn not in ('jmp', 'ret') else off
                 end = off + size
@@ -145,6 +149,12 @@ def check(dump, abi):
             pads = 0
             count += 1
         assert not pads
+        assert len(tables) == 1, (name, 'internal SIMD table targets', [hex(p) for p in tables])
+        table = tables.pop()
+        if shared_table is None:
+            shared_table = table
+        else:
+            assert table == shared_table, (name, 'numeric entries do not share one table', hex(table), hex(shared_table))
         for actual, expected, text, offset in branches:
             assert actual == expected, (name, 'branch target', text, hex(offset), hex(actual), hex(expected))
         soft = []

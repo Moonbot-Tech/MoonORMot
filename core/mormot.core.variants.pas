@@ -3611,6 +3611,11 @@ procedure InitializeVariantsJson;
 
 implementation
 
+{$if defined(ASMX64) and (defined(WIN64ABI) or not defined(ISDELPHI))}
+uses
+  mormot.core.base.asmx64.number;
+{$ifend}
+
 // some early methods implementation, defined here for proper inlining
 // 32-bit PInteger() is faster than 16-bit (dvoXXX in VOptions) on Intel CPUs
 
@@ -10187,6 +10192,7 @@ begin
     else
       TSynVarData(Value).VType := varInteger;
   end
+  // Keep decimals as Double: Currency conversion is locale-sensitive.
   else if AllowVarDouble then
   begin
     // Retain the private Double type and positive-zero contract.

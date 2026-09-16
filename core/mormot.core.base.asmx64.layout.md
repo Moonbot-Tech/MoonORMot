@@ -2,9 +2,10 @@
 
 The x86-64 entries are `GetExtended(P, err)`, `GetNumericVariantFromJson` and the
 three native-width `GetInteger` overloads. Each entry performs scanning and
-conversion itself, including its SSE2 byte continuation. `NumberSimdData` is one
-920-byte table, aligned as a procedure and never executed. The existing `POW10`
-table is shared with other library code. Pascal parsing and `DecimalToDouble`
+conversion itself, including its SSE2 byte continuation. An internal numeric-data
+unit owns one 920-byte table shared by both parser units; no table or dispatch state
+is exposed by the public interfaces of `mormot.core.base` or `mormot.core.variants`.
+The existing `POW10` table is shared with other library code. Pascal parsing and `DecimalToDouble`
 remain under the complementary platform condition for non-ASM targets.
 
 The value contract is nearest rounding, 15 significant digits of accuracy,
@@ -51,16 +52,22 @@ addresses; they are not wrappers around the measured calls. Python commands from
 the repository root (only the layout checker requires `capstone`):
 
 ```
-python tests/numbers/verify.py tests/numbers/bin/NumericLibrary.dll --corpus LAB/data --write win64.json
+python tests/numbers/verify.py tests/numbers/bin/NumericLibrary.dll --sse2 tests/numbers/bin/sse2/NumericLibrary.dll --corpus LAB/data --write win64.json
 python tests/numbers/dump_code.py tests/numbers/bin/NumericLibrary.dll > win64-code.json
 python core/number-layout/layout.py check win64-code.json win64
 python core/number-layout/layout.py source-check
 ```
 
-On Linux, run `verify.py libNumericLibrary-release.so --corpus DATA --expect win64.json`
+On Linux, run `verify.py libNumericLibrary-release.so --sse2
+libNumericLibrary-release-sse2.so --corpus DATA --expect win64.json`
 and `dump_code.py` with the Linux library. Check the dump with `layout.py check
 sysv-code.json sysv`; this can run on Windows, so the host needs only Python's
 standard library. Repeat runtime verification for Debug and the Unicode RTL build.
+
+The build scripts produce separate native and forced-SSE2 libraries. Runtime tests
+call only the five public parsing APIs; they neither read nor mutate internal unit
+state. The layout checker derives the shared internal table address from the built
+RIP-relative instructions instead of exporting the table through the test library.
 
 The checker compares every instruction's offset, length and mnemonic, every
 branch destination, DS placement, dead gap, table alignment, required loop and

@@ -1359,35 +1359,7 @@ function GetQWord(P: PUtf8Char; var err: integer): QWord;
   {$endif ISDELPHI}
 {$endif ASMX64}
 
-{$ifdef NUMBERS_ASMX64}
-// Shared by the whole x86-64 string, JSON and integer parsers.
-procedure NumberSimdData;
-var
-  // OR-ed into the page offset: 4096 selects the SSE2 byte path without an extra branch.
-  NumberNoSimd: cardinal = 4096;
-const
-  NUMBER_BIAS = 0;
-  NUMBER_THRESHOLD = 16;
-  NUMBER_ASCII0 = 32;
-  NUMBER_TEN = 48;
-  NUMBER_HUNDRED = 64;
-  NUMBER_TENTHOUSAND = 80;
-  NUMBER_SIGN = 96;
-  NUMBER_E8 = 104;
-  NUMBER_CTRLINT = 96;               // rows 1..15 at 112..351 (row 0 overlaps the sign row, never read)
-  NUMBER_CTRLDOT = 336;              // rows 1..15 at 352..591 (row 0 overlaps ctrlInt row 15, never read)
-  NUMBER_CTRLSHORT = 576;            // rows 1..8 at 592..719 (row 0 overlaps ctrlDot row 15, never read)
-  NUMBER_POWERS = 720;               // 10^0 .. 10^15 at 720..847
-  NUMBER_SCALE = 848;                // 2^512
-  NUMBER_INVSCALE = 856;             // 2^-512
-  NUMBER_MAXSCALED = 864;            // MaxDouble * 2^-512
-  NUMBER_MINBITS = 872;              // the smallest subnormal
-  NUMBER_OVERFLOW = 880;             // floor of the overflow midpoint / 10^289
-  NUMBER_UNDERFLOW = 888;            // floor of the underflow midpoint / 10^-342
-  NUMBER_EXACTINTEGER = 896;         // 2^53 as a double
-  NUMBER_INV5 = 904;                 // inverse of 5 modulo 2^64 (the JSON routine's strip test)
-  NUMBER_STRIPLIMIT = 912;           // floor((2^64 - 1) / 10)
-{$else}
+{$ifndef NUMBERS_ASMX64}
 // Retained-mantissa conversion for the Pascal parsers on other architectures.
 function DecimalToDouble(Mantissa: UInt64; Exponent: PtrInt; Negative: boolean): double;
 {$endif NUMBERS_ASMX64}
@@ -4421,6 +4393,9 @@ uses
   Windows,
   {$endif ISDELPHI20062007}
   Math;
+{$else}
+uses
+  mormot.core.base.asmx64.number;
 {$endif NUMBERS_ASMX64}
 
 {$ifdef FPC}
@@ -10270,8 +10245,10 @@ begin
   {$endif ASMX64}
   // redirect some CPU-aware functions
   {$ifdef NUMBERS_ASMX64}
+  {$ifndef MORMOT_NUMERIC_FORCE_SSE2}
   if cfSSSE3 in CpuFeatures then
     NumberNoSimd := 0;
+  {$endif MORMOT_NUMERIC_FORCE_SSE2}
   {$endif NUMBERS_ASMX64}
   {$ifdef ASMX86} 
   {$ifndef HASNOSSE2}
