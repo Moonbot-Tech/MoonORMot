@@ -5507,6 +5507,7 @@ end;
 
 { ************ Numbers (floats and integers) Low-level Definitions }
 
+{$ifndef NUMBERS_ASMX64}
 function GetInteger(P: PUtf8Char): PtrInt;
 var
   c: byte;
@@ -5695,6 +5696,7 @@ begin
     result := -result;
 end;
 
+{$endif NUMBERS_ASMX64}
 
 function GetIntegerDef(P: PUtf8Char; Default: PtrInt): PtrInt;
 var

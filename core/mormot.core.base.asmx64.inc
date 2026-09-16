@@ -700,6 +700,7 @@ end;
 {$ifdef NUMBERS_ASMX64}
 {$I mormot.core.base.asmx64.number.data.inc}
 {$I mormot.core.base.asmx64.number.string.inc}
+{$I mormot.core.base.asmx64.number.integer.inc}
 {$endif NUMBERS_ASMX64}
 
 {$endif ASMX64}
