@@ -6297,7 +6297,7 @@ begin
     c := P^;
     include(flags, fNeg);
   end;
-  remdigit := 19; // max Int64 resolution
+  remdigit := 18; // max Int64 resolution
   repeat
     inc(P);
     if (c >= '0') and
