@@ -4017,6 +4017,7 @@ end;
 procedure TTextWriter.FlushToStream;
 var
   tmp, written: PtrUInt;
+  newbuf: PUtf8Char;
 begin
   FlushFinal;
   if twoFlushToStreamNoAutoResize in fCustomOptions then
@@ -4026,21 +4027,23 @@ begin
   if (tmp < 49152) and
      (written > PtrUInt(tmp) * 4) then
     // tune small (stack-allocated?) buffer to grow by twice its size
-    fTempBufSize := fTempBufSize * 2
+    tmp := tmp * 2
   else if (written > 40 shl 20) and
           (tmp < 1 shl 20) then
     // total > 40MB -> grow internal buffer to 1MB
-    fTempBufSize := 1 shl 20
+    tmp := 1 shl 20
   else
     // nothing to change about internal buffer size
     exit;
+  GetMem(newbuf, tmp);
   if twoBufferIsExternal in fCustomOptions then
     // use heap, not stack from now on
     exclude(fCustomOptions, twoBufferIsExternal)
   else
     // from big content comes bigger buffer - but no need to realloc/move
     FreeMem(fTempBuf);
-  GetMem(fTempBuf, fTempBufSize);
+  fTempBuf := newbuf;
+  fTempBufSize := tmp;
   BEnd := fTempBuf + (fTempBufSize - 16); // as in SetBuffer()
   B := fTempBuf - 1;
 end;
