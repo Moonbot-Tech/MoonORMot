@@ -6786,8 +6786,6 @@ load_regs:
    cmp   r2, imvDouble
    beq   float_result
    cmp   r2, imvDateTime
-   beq   float_result
-   cmp   r2, imvCurrency
    bne   asmcall_end
    // store double result in res64
 float_result:
@@ -6870,8 +6868,6 @@ load_regs:
    cmp  x15, imvDouble
    b.eq float_result
    cmp  x15, imvDateTime
-   b.eq float_result
-   cmp  x15, imvCurrency
    b.ne asmcall_end
    // store double result in res64
 float_result:
@@ -6952,8 +6948,12 @@ asm
         je      @d
         cmp     cl, imvDateTime
         je      @d
+        {$ifdef FPCPOSIX} // FPC x86-64 SysV store imvCurrency into x87 ST0
         cmp     cl, imvCurrency
         jne     @e
+        fistp   qword [r12].TCallMethodArgs.res64
+        {$endif FPCPOSIX}
+        jmp     @e
 @d:     movlpd  qword ptr [r12].TCallMethodArgs.res64, xmm0
         // movlpd to ignore upper 64-bit of 128-bit xmm0 reg
 @e:     {$ifdef FPC}
