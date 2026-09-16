@@ -7215,9 +7215,9 @@ end;
 // optimized asm using SSE4 instructions for x64 64-bit
 
 {$ifdef OSWINDOWS}
-  {$L ..\..\static\delphi\sha512-x64sse4.obj}
+  {$L ..\static\delphi\sha512-x64sse4.obj}
 {$else}
-  {$L ..\..\static\x86_64-linux\sha512-x64sse4.o}
+  {$L ..\static\x86_64-linux\sha512-x64sse4.o}
 {$endif OSWINDOWS}
 
 procedure sha512_sse4(data, hash: pointer; blocks: Int64);
@@ -7256,10 +7256,10 @@ procedure sha512_sse4(data, hash: pointer; blocks: Int64);
    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. }
 
 {$ifdef OSWINDOWS}
-  {$L ..\..\static\delphi\crc32c64.obj}
+  {$L ..\static\delphi\crc32c64.obj}
 {$else}
   {$ifdef OSLINUX}
-  {$L ..\..\static\x86_64-linux\crc32c64.o}
+  {$L ..\static\x86_64-linux\crc32c64.o}
   {$else}
   {$L crc32c64.o}
   {$endif OSLINUX}
