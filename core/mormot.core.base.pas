@@ -1349,6 +1349,11 @@ function GetInt64(P: PUtf8Char; var err: integer): Int64; overload;
 // was successful (same as the standard val function)
 function GetQWord(P: PUtf8Char; var err: integer): QWord;
 
+
+// Retained-mantissa conversion for the Pascal parsers on other architectures.
+function DecimalToDouble(Mantissa: UInt64; Exponent: PtrInt; Negative: boolean): double;
+
+
 /// get the extended floating point value stored in P^
 // - set the err content to the index of any faulty character, 0 if conversion
 // was successful (same as the standard val function)
@@ -4372,10 +4377,11 @@ const
 
 implementation
 
-{$ifdef ISDELPHI20062007}
 uses
-  Windows; // circumvent unexpected warning about inlining (WTF!)
-{$endif ISDELPHI20062007}
+  {$ifdef ISDELPHI20062007}
+  Windows,
+  {$endif ISDELPHI20062007}
+  Math;
 
 {$ifdef FPC}
   // globally disable some FPC paranoid warnings - rely on x86_64 as reference
@@ -5574,6 +5580,9 @@ function GetInteger(P: PUtf8Char; var err: integer): PtrInt;
 var
   c: byte;
   minus: boolean;
+  {$ifdef CPU64}
+  digits: PUtf8Char;
+  {$endif CPU64}
 begin
   result := 0;
   err := 1; // don't return the exact index, just 1 as error flag
@@ -5605,25 +5614,47 @@ begin
         c := byte(P^);
       until c <> ord(' ');
   end;
+  while (c = ord('0')) and (P[1] in ['0'..'9']) do
+  begin
+    inc(P);
+    c := byte(P^);
+  end;
   dec(c, 48);
   if c > 9 then
     exit;
   result := c;
+  {$ifdef CPU64}
+  digits := P;
+  {$endif CPU64}
   repeat
     inc(P);
     c := byte(P^);
     dec(c, 48);
     if c <= 9 then
-      result := result * 10 + PtrInt(c)
+    begin
+      {$ifdef CPU64}
+      if P - digits >= 19 then
+        exit; // at most 19 significant digits: magnitude fits UInt64
+      {$else}
+      if PtrUInt(result) >= PtrUInt(High(PtrInt)) div 10 then
+        if (PtrUInt(result) > PtrUInt(High(PtrInt)) div 10) or
+           (c > High(PtrInt) mod 10 + ord(minus)) then
+          exit; // the next digit would exceed the signed result range
+      {$endif CPU64}
+      result := PtrInt(PtrUInt(result) * 10 + c);
+    end
     else if c <> 256 - 48 then
       exit
     else
       break;
   until false;
+  if PtrUInt(result) > PtrUInt(High(PtrInt)) + PtrUInt(ord(minus)) then
+    exit;
   err := 0; // success
-  if minus then
+  if minus and (result <> Low(PtrInt)) then
     result := -result;
 end;
+
 
 function GetIntegerDef(P: PUtf8Char; Default: PtrInt): PtrInt;
 var
@@ -6243,6 +6274,296 @@ end;
 
 {$endif CPU64}
 
+// Bounded conversion: no input rescan or discarded-tail recovery.
+function DecimalLeadingZeros(A: UInt64): Integer;
+begin
+  result := 0;
+  while A and $8000000000000000 = 0 do
+  begin
+    inc(result);
+    A := A shl 1;
+  end;
+end;
+
+
+function DecimalCompareBinary(Mantissa: UInt64; Exponent: integer;
+  binaryMantissa: UInt64; binaryExponent: integer): integer;
+type
+  TProduct = record
+    Count: integer;
+    Limb: array[0..27] of cardinal; // at most 54 + ceil(342*log2(5)) = 849 bits
+  end;
+
+  procedure Init(var P: TProduct; Value: UInt64);
+  begin
+    P.Limb[0] := cardinal(Value);
+    P.Limb[1] := Value shr 32;
+    P.Count := 1 + ord(P.Limb[1] <> 0);
+  end;
+
+  procedure Power5(var P: TProduct; E: integer);
+  const
+    POW5: array[0..13] of cardinal = (1, 5, 25, 125, 625, 3125, 15625,
+      78125, 390625, 1953125, 9765625, 48828125, 244140625, 1220703125);
+  var
+    i, step: integer;
+    carry: UInt64;
+    factor: cardinal;
+  begin
+    while E <> 0 do
+    begin
+      step := 13;
+      if E < step then
+        step := E;
+      factor := POW5[step];
+      carry := 0;
+      for i := 0 to P.Count - 1 do
+      begin
+        carry := UInt64(P.Limb[i]) * factor + carry;
+        P.Limb[i] := cardinal(carry);
+        carry := carry shr 32;
+      end;
+      if carry <> 0 then
+      begin
+        P.Limb[P.Count] := carry;
+        inc(P.Count);
+      end;
+      dec(E, step);
+    end;
+  end;
+
+  procedure Shift(var P: TProduct; N: integer);
+  var
+    words, bits, i: integer;
+  begin
+    words := N shr 5;
+    bits := N and 31;
+    if bits = 0 then
+    begin
+      for i := P.Count - 1 downto 0 do
+        P.Limb[i + words] := P.Limb[i];
+      inc(P.Count, words);
+    end
+    else
+    begin
+      P.Limb[P.Count + words] := P.Limb[P.Count - 1] shr (32 - bits);
+      for i := P.Count - 1 downto 1 do
+        P.Limb[i + words] := (P.Limb[i] shl bits) or (P.Limb[i - 1] shr (32 - bits));
+      P.Limb[words] := P.Limb[0] shl bits;
+      inc(P.Count, words + 1);
+      if P.Limb[P.Count - 1] = 0 then
+        dec(P.Count);
+    end;
+    for i := 0 to words - 1 do
+      P.Limb[i] := 0;
+  end;
+
+var
+  a, b: TProduct;
+  aBits, bBits, i: integer;
+begin
+  Init(a, Mantissa);
+  Init(b, binaryMantissa);
+  if Exponent >= 0 then
+    Power5(a, Exponent)
+  else
+    Power5(b, -Exponent);
+  aBits := (a.Count - 1) * 32 + 64 - DecimalLeadingZeros(a.Limb[a.Count - 1]);
+  bBits := (b.Count - 1) * 32 + 64 - DecimalLeadingZeros(b.Limb[b.Count - 1]);
+  result := (aBits + Exponent) - (bBits + binaryExponent);
+  if result <> 0 then
+    exit;
+  // Equal bit lengths bound either shifted product by the larger existing one.
+  if Exponent > binaryExponent then
+    Shift(a, Exponent - binaryExponent)
+  else if Exponent < binaryExponent then
+    Shift(b, binaryExponent - Exponent);
+  for i := a.Count - 1 downto 0 do
+    if a.Limb[i] <> b.Limb[i] then
+    begin
+      result := ord(a.Limb[i] > b.Limb[i]) * 2 - 1;
+      exit;
+    end;
+end;
+
+function DecimalApproximateBits(Mantissa: UInt64; Exponent: integer): UInt64;
+const
+  FractionMask: UInt64 = $000fffffffffffff;
+var
+  d: double;
+  bits: UInt64 absolute d;
+  binaryPower, shift: integer;
+
+  procedure Normalize;
+  begin
+    inc(binaryPower, integer(bits shr 52) - 1023);
+    bits := (bits and FractionMask) or $3ff0000000000000;
+  end;
+
+begin
+  d := Mantissa;
+  binaryPower := 0;
+  Normalize;
+  // Every floating-point intermediate is normal, including for subnormal results.
+  // Exponents are applied to the final bits instead of risking FP overflow/underflow.
+  while Exponent < -160 do
+  begin
+    d := d * POW10[50]; // 1E-160
+    Normalize;
+    inc(Exponent, 160);
+  end;
+  if Exponent > 160 then
+  begin
+    d := d * POW10[39]; // 1E160
+    Normalize;
+    dec(Exponent, 160);
+  end;
+  if Exponent >= 0 then
+  begin
+    d := d * POW10[(Exponent shr 5) + 34];
+    d := d * POW10[Exponent and 31];
+  end
+  else
+  begin
+    Exponent := -Exponent;
+    d := d * POW10[(Exponent shr 5) + 45];
+    d := d / POW10[Exponent and 31];
+  end;
+  Normalize;
+  inc(binaryPower, 1023);
+  if binaryPower >= 2047 then
+    result := $7ff0000000000000
+  else if binaryPower > 0 then
+    result := (bits and FractionMask) or (UInt64(binaryPower) shl 52)
+  else
+  begin
+    shift := 1 - binaryPower;
+    if shift >= 64 then
+      result := 0
+    else
+      result := ((bits and FractionMask) or (UInt64(1) shl 52)) shr shift;
+  end;
+end;
+
+function DecimalCompareValue(Mantissa: UInt64; Exponent: integer; Bits: UInt64;
+  Midpoint: boolean): integer;
+var
+  binaryMantissa: UInt64;
+  binaryExponent: integer;
+begin
+  binaryExponent := Bits shr 52;
+  binaryMantissa := Bits and $000fffffffffffff;
+  if binaryExponent = 0 then
+    binaryExponent := -1074
+  else
+  begin
+    binaryMantissa := binaryMantissa or (UInt64(1) shl 52);
+    dec(binaryExponent, 1075);
+  end;
+  if Midpoint then
+  begin
+    binaryMantissa := binaryMantissa * 2 + 1;
+    dec(binaryExponent);
+  end
+  else if Bits = 0 then
+  begin
+    result := 1; // callers have a nonzero positive decimal
+    exit;
+  end;
+  result := DecimalCompareBinary(Mantissa, Exponent, binaryMantissa, binaryExponent);
+end;
+
+function DecimalToDouble(Mantissa: UInt64; Exponent: PtrInt; Negative: boolean): double;
+const
+  InfinityBits: UInt64 = $7ff0000000000000;
+var
+  bits, lo, hi, mid: UInt64;
+  cmp, attempt: integer;
+  away, settled: boolean;
+begin
+  if (Mantissa = 0) or (Exponent < -342) then
+    bits := 0
+  else if Exponent > 308 then
+    bits := InfinityBits
+  else
+  begin
+    bits := DecimalApproximateBits(Mantissa, Exponent);
+    settled := false;
+    // Usually both midpoint checks accept the first approximation. Corrections
+    // are bounded; binary search also guarantees termination if it is farther off.
+    for attempt := 0 to 7 do
+    begin
+      if bits < InfinityBits then
+      begin
+        cmp := DecimalCompareValue(Mantissa, Exponent, bits, true);
+        if (cmp > 0) or ((cmp = 0) and odd(bits)) then
+        begin
+          inc(bits);
+          continue;
+        end;
+      end;
+      if bits > 0 then
+      begin
+        cmp := DecimalCompareValue(Mantissa, Exponent, bits - 1, true);
+        if (cmp < 0) or ((cmp = 0) and odd(bits)) then
+        begin
+          dec(bits);
+          continue;
+        end;
+      end;
+      settled := true;
+      break;
+    end;
+    if not settled then
+    begin
+      lo := 0;
+      hi := InfinityBits;
+      while lo < hi do
+      begin
+        mid := lo + (hi - lo) shr 1;
+        cmp := DecimalCompareValue(Mantissa, Exponent, mid, true);
+        if (cmp > 0) or ((cmp = 0) and odd(mid)) then
+          lo := mid + 1
+        else
+          hi := mid;
+      end;
+      bits := lo;
+    end;
+  end;
+  // Directed rounding: the nearest result moves to its neighbour on the rounding side when
+  // the exact value is not that double; an overflow rounds toward zero to the largest finite
+  // double and away from zero to infinity (IEEE 754 7.4), an underflow to zero or the
+  // smallest subnormal likewise.
+  if (GetRoundMode <> rmNearest) and (Mantissa <> 0) then
+  begin
+    case GetRoundMode of
+      rmDown: away := Negative;
+      rmUp: away := not Negative;
+    else
+      away := false;
+    end;
+    if bits = InfinityBits then
+    begin
+      if not away then
+        bits := InfinityBits - 1; // the largest finite double
+    end
+    else if bits = 0 then
+      inc(bits, ord(away))
+    else
+    begin
+      cmp := DecimalCompareValue(Mantissa, Exponent, bits, false);
+      if away then
+        inc(bits, ord(cmp > 0))
+      else
+        dec(bits, ord(cmp < 0));
+    end;
+  end;
+  if Negative then
+    bits := bits or $8000000000000000;
+  result := PDouble(@bits)^;
+end;
+
+
 function GetExtended(P: PUtf8Char): TSynExtended;
 var
   err: integer;
@@ -6266,11 +6587,16 @@ end;
 {$ifndef CPU32DELPHI}
 
 function GetExtended(P: PUtf8Char; out err: integer): TSynExtended;
+const
+  Scale: double = 1.3407807929942597e154; // 2^512
+  InvScale: double = 7.458340731200207e-155; // 2^-512
+  MaxScaled: double = 1.3407807929942596e154; // MaxDouble * 2^-512
 var
   remdigit: integer;
+  bits: UInt64;
   frac, exp: PtrInt;
   c: AnsiChar;
-  flags: set of (fNeg, fNegExp, fValid);
+  flags: set of (fNeg, fNegExp, fValid, fDot);
   v64: Int64; // allows 64-bit resolution for the digits (match 80-bit extended)
 label
   e;
@@ -6303,7 +6629,8 @@ begin
     if (c >= '0') and
        (c <= '9') then
     begin
-      dec(remdigit);
+      if (v64 <> 0) or (c <> '0') then
+        dec(remdigit); // integer leading zeroes do not consume significant digits
       if remdigit >= 0 then // over-required digits are just ignored
       begin
         dec(c, ord('0'));
@@ -6326,16 +6653,37 @@ begin
     end;
     if c <> '.' then
       break;
-    if frac > 0 then
+    if fDot in flags then
       goto e; // will return partial value but err=1
+    include(flags, fDot);
+    if frac > 0 then
+    begin
+      c := P^;
+      while c in ['0'..'9'] do
+      begin
+        inc(P);
+        c := P^;
+      end;
+      continue;
+    end;
     dec(frac);
     c := P^;
+    if v64 = 0 then
+      while c = '0' do
+      begin
+        include(flags, fValid);
+        dec(frac);
+        inc(P);
+        c := P^;
+      end;
   until false;
   if frac < 0 then
     inc(frac); // adjust digits after '.'
   if (c = 'E') or
      (c = 'e') then
   begin
+    if not (fValid in flags) then
+      goto e; // exponent requires a mantissa
     exp := 0;
     exclude(flags, fValid);
     c := P^;
@@ -6353,18 +6701,24 @@ begin
          (c > '9') then
         break;
       dec(c, ord('0'));
+      if exp >= High(PtrInt) div 10 then
+        if (exp > High(PtrInt) div 10) or
+           (byte(c) > High(PtrInt) mod 10) then
+          goto e;
       exp := (exp * 10) + byte(c);
       include(flags, fValid);
     until false;
     if fNegExp in flags then
-      dec(frac, exp)
-    else
-      inc(frac, exp);
-    if (frac <= -324) or
-       (frac >= 308) then
     begin
-      frac := 0;
-      goto e; // limit to 5.0 x 10^-324 .. 1.7 x 10^308 double range
+      if frac < Low(PtrInt) + exp then
+        goto e;
+      dec(frac, exp);
+    end
+    else
+    begin
+      if frac > High(PtrInt) - exp then
+        goto e;
+      inc(frac, exp);
     end;
   end;
   if (fValid in flags) and
@@ -6372,18 +6726,72 @@ begin
     err := 0
   else
 e:  err := 1; // return the (partial) value even if not ended with #0
+  {$ifndef TSYNEXTENDED80}
+  if err = 0 then
+  begin
+    result := DecimalToDouble(v64, frac, fNeg in flags);
+    bits := PUInt64(@result)^;
+    if (bits and $7fffffffffffffff <> $7ff0000000000000) and
+       ((v64 = 0) or (bits and $7fffffffffffffff <> 0)) then
+      exit;
+    err := 1;
+  end;
+  {$endif TSYNEXTENDED80}
+  if v64 = 0 then
+  begin
+    result := 0;
+    if fNeg in flags then
+      result := -result;
+    exit;
+  end;
   exp := PtrUInt(@POW10);
+  if (frac < 0) and (frac >= -22) and (v64 <= 9007199254740991) then
+  begin
+    // Exact mantissa / exact positive power: one correctly rounded operation.
+    result := v64;
+    if fNeg in flags then
+      result := -result;
+    result := result / PPow10(exp)[-frac];
+    exit;
+  end;
   if frac >= -31 then
     if frac <= 31 then
       result := PPow10(exp)[frac] // -31 .. + 31
+    else if frac < 308 then
+    begin
+      result := HugePower10Pos(frac, PPow10(exp)); // +32 .. +307
+      if frac > 290 then
+      begin
+        result := (result * InvScale) * v64;
+        if result > MaxScaled then
+        begin
+          result := v64;
+          err := 1;
+        end
+        else
+          result := result * Scale;
+        if fNeg in flags then
+          result := -result;
+        exit;
+      end;
+    end
     else
-      result := HugePower10Pos(frac, PPow10(exp)) // +32 ..
+    begin
+      result := 1;
+      err := 1;
+    end
+  else if frac > -324 then
+    result := HugePower10Neg(frac, PPow10(exp)) // -323 .. -32
   else
-    result := HugePower10Neg(frac, PPow10(exp));  // .. -32
+  begin
+    result := 1;
+    err := 1;
+  end;
   if fNeg in flags then
     result := result * PPow10(exp)[33]; // * -1
   result := result * v64;
 end;
+
 
 {$endif CPU32DELPHI}
 

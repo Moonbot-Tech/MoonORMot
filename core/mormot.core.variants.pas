@@ -10037,23 +10037,21 @@ exponent:         inc(Json); // inlined custom GetInteger()
   end;
 end;
 
-const
-  CURRENCY_FACTOR: array[-4 .. -1] of integer = (1, 10, 100, 1000);
-
 function GetNumericVariantFromJson(Json: PUtf8Char; var Value: TVarData;
   AllowVarDouble: boolean): PUtf8Char;
 var
-  // logic below is extracted from mormot.core.base.pas' GetExtended()
+  // Leading fractional zeroes affect scale, not significant-digit capacity.
   remdigit: integer;
+  d: double;
+  bits: UInt64 absolute d;
   frac, exp: PtrInt;
   c: AnsiChar;
-  flags: set of (fNeg, fNegExp, fValid);
-  v64: Int64; // allows 64-bit resolution for the digits (match 80-bit extended)
-  d: double;
+  flags: set of (fNeg, fNegExp, fValid, fDot);
+  v64: UInt64; // up to 19 decimal digits, including the magnitude of Low(Int64)
 begin
   // 1. parse input text as number into v64, frac, digit, exp
   result := nil; // return nil to indicate parsing error
-  byte(flags) := 0;
+  flags := [fValid]; // the first-character check below guarantees a mantissa
   v64 := 0;
   frac := 0;
   if Json = nil then
@@ -10065,11 +10063,14 @@ begin
     inc(Json);
     include(flags, fNeg);
   end;
+  if (c < '0') or
+     (c > '9') then
+    exit; // JSON requires an integer part
   if (c = '0') and
      (Json[1] >= '0') and
      (Json[1] <= '9') then // '012' is not Json, but '0.xx' and '0' are
     exit;
-  remdigit := 19;    // max Int64 resolution
+  remdigit := 19;    // 19 decimal digits always fit UInt64; validate signed range at the end
   repeat
     if (c >= '0') and
        (c <= '9') then
@@ -10086,7 +10087,6 @@ begin
         {$endif CPU64}
         inc(v64, byte(c));
         c := Json^;
-        include(flags, fValid);
         if frac <> 0 then
           dec(frac); // frac<0 for digits after '.'
         continue;
@@ -10099,11 +10099,29 @@ begin
     if c <> '.' then
       break;
     c := Json[1];
-    if (frac > 0) or
-       (c = #0) then // avoid ##.
+    if (fDot in flags) or
+       (c < '0') or
+       (c > '9') then // one decimal point, followed by a digit
       exit;
-    inc(json);
+    inc(Json);
+    include(flags, fDot);
+    if frac > 0 then
+    begin
+      while c in ['0'..'9'] do
+      begin
+        inc(Json);
+        c := Json^;
+      end;
+      continue;
+    end;
     dec(frac);
+    if v64 = 0 then
+      while c = '0' do
+      begin
+        dec(frac);
+        inc(Json);
+        c := Json^;
+      end;
   until false;
   if frac < 0 then
     inc(frac);       // adjust digits after '.'
@@ -10128,51 +10146,59 @@ begin
         break;
       inc(Json);
       dec(c, ord('0'));
+      if exp >= High(PtrInt) div 10 then
+        if (exp > High(PtrInt) div 10) or
+           (byte(c) > High(PtrInt) mod 10) then
+          exit;
       exp := (exp * 10) + byte(c);
       include(flags, fValid);
     until false;
     if fNegExp in flags then
-      dec(frac, exp)
+    begin
+      if frac < Low(PtrInt) + exp then
+        exit;
+      dec(frac, exp);
+    end
     else
+    begin
+      if frac > High(PtrInt) - exp then
+        exit;
       inc(frac, exp);
+    end;
   end;
   if not (fValid in flags) then
     exit;
-  if fNeg in flags then
-    v64 := -v64;
   // 2. now v64, frac, digit, exp contain number parsed from Json
   if (frac = 0) and
-     (remdigit >= 0) then
+     (remdigit >= 0) and
+     ((v64 <= UInt64(High(Int64))) or
+      ((v64 = UInt64(High(Int64)) + 1) and (fNeg in flags))) then
   begin
     // return an integer or Int64 value
-    Value.VInt64 := v64;
+    if (fNeg in flags) and (v64 <= UInt64(High(Int64))) then
+      Value.VInt64 := -Int64(v64)
+    else
+      Value.VInt64 := Int64(v64);
     if remdigit <= 9 then
       TSynVarData(Value).VType := varInt64
     else
       TSynVarData(Value).VType := varInteger;
   end
-  else if false and (frac < 0) and
-          (frac >= -4) then // keep decimals as Double: Currency conversion is locale-sensitive
+  else if AllowVarDouble then
   begin
-    // currency as ###.0123
-    TSynVarData(Value).VType := varCurrency;
-    Value.VInt64 := v64 * CURRENCY_FACTOR[frac]; // as round(CurrValue*10000)
-  end
-  else if AllowVarDouble and
-          (frac > -324) then // 5.0 x 10^-324 .. 1.7 x 10^308
-  begin
-    // converted into a double value
-    exp := PtrUInt(@POW10);
-    if frac >= -31 then
-      if frac <= 31 then
-        d := PPow10(exp)[frac]                 // -31 .. + 31
-      else if (18 - remdigit) + integer(frac) >= 308 then
-        exit                                   // +308 ..
-      else
-        d := HugePower10Pos(frac, PPow10(exp)) // +32 .. +307
+    // Retain the private Double type and positive-zero contract.
+    if v64 = 0 then
+      bits := 0
     else
-      d := HugePower10Neg(frac, PPow10(exp));  // .. -32
-    Value.VDouble := d * v64;
+    begin
+      if (frac < -342) or (frac > 308) then
+        exit;
+      d := DecimalToDouble(v64, frac, fNeg in flags);
+      if (bits and $7fffffffffffffff = 0) or
+         (bits and $7fffffffffffffff = $7ff0000000000000) then
+        exit;
+    end;
+    Value.VDouble := d;
     TSynVarData(Value).VType := varDouble;
   end
   else
