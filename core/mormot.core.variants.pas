@@ -10151,8 +10151,8 @@ begin
     else
       TSynVarData(Value).VType := varInteger;
   end
-  else if (frac < 0) and
-          (frac >= -4) then
+  else if false and (frac < 0) and
+          (frac >= -4) then // keep decimals as Double: Currency conversion is locale-sensitive
   begin
     // currency as ###.0123
     TSynVarData(Value).VType := varCurrency;
