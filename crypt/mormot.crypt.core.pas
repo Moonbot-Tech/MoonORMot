@@ -2092,7 +2092,8 @@ type
     SHA3_384,
     SHA3_512,
     SHAKE_128,
-    SHAKE_256);
+    SHAKE_256,
+    KECCAK_256);
 
   /// implements SHA-3 (Keccak) hashing
   // - Keccak was the winner of the NIST hashing competition for a new hashing
@@ -3027,6 +3028,12 @@ procedure AESSHA256Full(bIn: pointer; Len: integer; outStream: TStream;
 // compatibility of existing code (CryptDataForCurrentUser or TProtocolAes)
 // - use Pbkdf2HmacSha256() or similar functions for safer password derivation
 procedure Sha256Weak(const s: RawByteString; out Digest: TSha256Digest);
+
+/// compute a Keccak-256 binary digest
+procedure Keccak256Full(Buffer: pointer; Len: integer; out Digest: THash256);
+
+/// compute a lowercase hexadecimal Keccak-256 digest
+function Keccak256(const s: RawByteString): RawUtf8;
 
 
 
@@ -8919,7 +8926,7 @@ type
 
 const
   SHA3_DEF_LEN: array[TSha3Algo] of integer = (
-    224, 256, 384, 512, 256, 512);
+    224, 256, 384, 512, 256, 512, 256);
 
 procedure TSha3Context.Init(aAlgo: TSha3Algo);
 var
@@ -8927,7 +8934,8 @@ var
 begin
   FillCharFast(self, SizeOf(self), 0);
   bits := SHA3_DEF_LEN[aAlgo];
-  if aAlgo < SHAKE_128 then
+  if (aAlgo < SHAKE_128) or
+     (aAlgo = KECCAK_256) then
     bits := bits shl 1;
   Rate := cKeccakPermutationSize - bits;
   Capacity := bits;
@@ -9074,7 +9082,9 @@ begin
   else
     lw := bits and Pred(cardinal(1) shl bitlen);
   // append the domain separation bits
-  if Algo >= SHAKE_128 then
+  if Algo = KECCAK_256 then
+    ll := bitlen
+  else if Algo >= SHAKE_128 then
   begin
     // SHAKE: append four MSB bits 1111
     lw := lw or (cardinal($0f) shl bitlen);
@@ -11561,6 +11571,24 @@ begin
   end
   else
     SHA.Full(p, L, Digest);
+end;
+
+
+procedure Keccak256Full(Buffer: pointer; Len: integer; out Digest: THash256);
+var
+  H: TSha3;
+begin
+  H.Init(KECCAK_256);
+  H.Update(Buffer, Len);
+  H.Final(Digest);
+end;
+
+function Keccak256(const s: RawByteString): RawUtf8;
+var
+  d: THash256;
+begin
+  Keccak256Full(pointer(s), length(s), d);
+  result := BinToHexLower(@d, SizeOf(d));
 end;
 
 
