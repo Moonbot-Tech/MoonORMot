@@ -11,7 +11,7 @@ This repository is a product-oriented derivative of [Synopse mORMot 2](https://g
 - Pinned upstream commit: `38874e16c03373a5275b959fdb1cc38d5597f67f`
 - Upstream release date: 2024-10-16
 
-The first commit in this repository is that exact upstream commit. Commit `9bfb7f3b51aae60807048bb6c8bb34528323ede3` then extracts and flattens the upstream `src/` subtree into the product layout. All Moonbot changes remain visible as later commits.
+The MoonORMot product branch is anchored at that exact upstream commit. Commit `9bfb7f3b51aae60807048bb6c8bb34528323ede3` then extracts and flattens the upstream `src/` subtree into the product layout. All Moonbot changes remain visible as later commits.
 
 The public `Moonbot-Tech/mORMot2` repository remains a normal GitHub fork used for proposing focused changes upstream. This product tree is intentionally maintained as a separate non-fork repository so its pinned base, flattened layout, product configuration and qualification history are not confused with upstream pull-request branches.
 
