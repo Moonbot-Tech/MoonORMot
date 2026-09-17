@@ -3066,7 +3066,11 @@ end;
 
 { ********* Main Memory Manager Functions }
 
+{$ifdef MSWINDOWS}
+function _GetMemSlow(size: PtrUInt): pointer;
+{$else}
 function _GetMem(size: PtrUInt): pointer;
+{$endif MSWINDOWS}
   {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
 {$ifdef MSWINDOWS} // keep RSP and its Win64 shadow space under FPC control
 var
@@ -3792,6 +3796,91 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         {$endif MSWINDOWS}
 end;
 
+{$ifdef MSWINDOWS}
+
+// Keep the overwhelmingly common tiny/small allocation path leaf and
+// frame-less.  Anything requiring a helper call, another arena attempt or a
+// fresh pool is delegated before allocator state is changed.
+function _GetMem(size: PtrUInt): pointer; nostackframe; assembler;
+asm
+        {$if defined(FPCMM_ASSUMEMULTITHREAD) and
+             defined(FPCMM_TINYPERTHREAD)}
+        mov     r11, rcx // preserve Size for the slow tail transfer
+        test    rcx, rcx
+        jz      @Slow
+        cmp     rcx, MaximumSmallBlockSize - BlockHeaderSize
+        ja      @Slow
+        lea     r8, [rip + SmallBlockInfo]
+        lea     rdx, [rcx + BlockHeaderSize - 1]
+        shr     rdx, 4 // div SmallBlockGranularity
+        movzx   ecx, byte ptr [r8 + rdx].TSmallBlockInfo.GetmemLookup
+        shl     ecx, SmallBlockTypePO2
+        cmp     ecx, SizeOf(TTinyBlockTypes)
+        jae     @Small
+        // Pick the same per-thread tiny arena as the full allocator.
+        lea     r10, [r8 + rcx]
+        db      $65, $8B, $04, $25, $48, $00, $00, $00 // mov eax, gs:[$48]
+        mov     edx, $9E3779B1
+        mul     edx
+        shr     eax, 32 - NumTinyBlockArenasPO2
+        jz      @TryLock
+        shl     eax, NumTinyBlockTypesPO2 + SmallBlockTypePO2
+        lea     r10, [rax + r10 + TSmallBlockInfo.Tiny - SizeOf(TTinyBlockTypes)]
+        jmp     @TryLock
+@Small:
+        lea     r10, [r8 + rcx + TSmallBlockInfo.Small]
+@TryLock:
+        cmp     dword ptr [r10].TSmallBlockType.LastFreeCount, 0
+        jne     @Slow
+        cmp     byte ptr [r10].TSmallBlockType.LastFreeLocked, false
+        jne     @Slow
+        xor     eax, eax
+        mov     r9d, 1
+        cmp     byte ptr [r10].TSmallBlockType.Locked, false
+        jne     @Slow
+  lock  cmpxchg byte ptr [r10].TSmallBlockType.Locked, r9b
+        jne     @Slow
+        mov     rdx, [r10].TSmallBlockType.NextPartiallyFreePool
+        mov     rax, [rdx].TSmallBlockPoolHeader.FirstFreeBlock
+        cmp     rdx, r10
+        je      @Sequential
+        add     [r10].TSmallBlockType.GetmemCount, 1
+        add     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
+        mov     rcx, DropSmallFlagsMask
+        and     rcx, [rax - BlockHeaderSize]
+        mov     [rdx].TSmallBlockPoolHeader.FirstFreeBlock, rcx
+        mov     [rax - BlockHeaderSize], rdx
+        test    rcx, rcx
+        jnz     @Unlock
+        // The pool became full: unlink it from the partial-pool list.
+        mov     rcx, [rdx].TSmallBlockPoolHeader.NextPartiallyFreePool
+        mov     [rcx].TSmallBlockPoolHeader.PreviousPartiallyFreePool, r10
+        mov     [r10].TSmallBlockType.NextPartiallyFreePool, rcx
+@Unlock:
+        mov     byte ptr [r10].TSmallBlockType.Locked, false
+        ret
+@Sequential:
+        cmp     rax, [r10].TSmallBlockType.MaxSequentialFeedBlockAddress
+        ja      @UnlockSlow
+        add     [r10].TSmallBlockType.GetmemCount, 1
+        movzx   ecx, word ptr [r10].TSmallBlockType.BlockSize
+        mov     rdx, [r10].TSmallBlockType.CurrentSequentialFeedPool
+        lea     r9, [rax + rcx]
+        mov     [r10].TSmallBlockType.NextSequentialFeedBlockAddress, r9
+        add     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
+        mov     [rax - BlockHeaderSize], rdx
+        mov     byte ptr [r10].TSmallBlockType.Locked, false
+        ret
+@UnlockSlow:
+        mov     byte ptr [r10].TSmallBlockType.Locked, false
+@Slow:
+        mov     rcx, r11
+        {$endif}
+        jmp     _GetMemSlow
+end;
+
+{$endif MSWINDOWS}
+
 function FreeMediumBlock(arg1, arg2: pointer): PtrUInt;
   {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
 {$ifdef MSWINDOWS} // keep RSP and its Win64 shadow space under FPC control
@@ -3943,7 +4032,11 @@ const
   REPORTMEMORYLEAK_FREEDHEXSPEAK = $B10D1E55;
 {$endif FPCMM_REPORTMEMORYLEAKS}
 
+{$ifdef MSWINDOWS}
+function _FreeMemSlow(P: pointer): PtrUInt;
+{$else}
 function _FreeMem(P: pointer): PtrUInt;
+{$endif MSWINDOWS}
   {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
 {$ifdef MSWINDOWS} // keep RSP and its Win64 shadow space under FPC control
 var
@@ -4229,8 +4322,104 @@ asm     // P = rcx on Windows, P = rdi on SystemV
 @Quit:
 end;
 
+{$ifdef MSWINDOWS}
+
+// The usual small-block release needs neither a call nor a non-volatile
+// register.  Empty-pool retirement and all medium/large work stay in the
+// fully framed implementation below this leaf front-end.
+function _FreeMem(P: pointer): PtrUInt; nostackframe; assembler;
+asm
+        {$if defined(FPCMM_ASSUMEMULTITHREAD) and
+             not defined(FPCMM_REPORTMEMORYLEAKS)}
+        mov     r11, rcx // preserve P for the slow tail transfer
+        test    rcx, rcx
+        jz      @Void
+        mov     rdx, [rcx - BlockHeaderSize]
+        test    dl, IsFreeBlockFlag + IsMediumBlockFlag + IsLargeBlockFlag
+        jnz     @Slow
+        mov     r10, [rdx].TSmallBlockPoolHeader.BlockType
+        xor     eax, eax
+        mov     r9d, 1
+        cmp     byte ptr [r10].TSmallBlockType.Locked, false
+        jne     @Deferred
+  lock  cmpxchg byte ptr [r10].TSmallBlockType.Locked, r9b
+        jne     @Deferred
+        // A pending cross-thread bin needs the draining loop in the slow path.
+        cmp     dword ptr [r10].TSmallBlockType.LastFreeCount, 0
+        jne     @UnlockSlow
+        // Retain an already proven hot empty sequential pool here.  Cold
+        // larger pools and any non-sequential empty pool still need the slow
+        // retirement/scoring path before any allocator state is changed.
+        cmp     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
+        jne     @Release
+        cmp     qword ptr [rdx].TSmallBlockPoolHeader.FirstFreeBlock, 0
+        jne     @UnlockSlow
+        cmp     word ptr [r10].TSmallBlockType.BlockSize, 256
+        jbe     @Release
+        cmp     byte ptr [r10].TSmallBlockType.EmptyPoolReuseScore, SmallBlockHotPoolThreshold
+        jb      @UnlockSlow
+@Release:
+        add     [r10].TSmallBlockType.FreememCount, 1
+        mov     rax, [rdx].TSmallBlockPoolHeader.FirstFreeBlock
+        sub     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
+        mov     [rdx].TSmallBlockPoolHeader.FirstFreeBlock, rcx
+        lea     r9, [rax + IsFreeBlockFlag]
+        mov     [rcx - BlockHeaderSize], r9
+        test    rax, rax
+        jnz     @Unlock
+        // A previously full pool becomes partially free again.
+        mov     rcx, [r10].TSmallBlockType.NextPartiallyFreePool
+        mov     [rdx].TSmallBlockPoolHeader.PreviousPartiallyFreePool, r10
+        mov     [rdx].TSmallBlockPoolHeader.NextPartiallyFreePool, rcx
+        mov     [rcx].TSmallBlockPoolHeader.PreviousPartiallyFreePool, rdx
+        mov     [r10].TSmallBlockType.NextPartiallyFreePool, rdx
+@Unlock:
+        mov     byte ptr [r10].TSmallBlockType.Locked, false
+        movzx   eax, word ptr [r10].TSmallBlockType.BlockSize
+        ret
+@UnlockSlow:
+        mov     byte ptr [r10].TSmallBlockType.Locked, false
+        jmp     @Slow
+@Deferred:
+        // Preserve the existing lock-free hand-off contract for a contended
+        // size class, but use only volatile Win64 registers.
+        mov     rax, r10
+        lea     r8, [rip + SmallBlockInfo]
+        sub     rax, r8
+        shr     eax, SmallBlockTypePO2 - 3
+        lea     r8, [r8 + rax].TSmallBlockInfo.SmallLastFree
+@DeferredLock:
+        xor     eax, eax
+        mov     r9d, 1
+  lock  cmpxchg byte ptr [r10].TSmallBlockType.LastFreeLocked, r9b
+        je      @DeferredStore
+        pause
+        jmp     @DeferredLock
+@DeferredStore:
+        mov     rax, [r8]
+        mov     [rcx], rax
+        mov     [r8], rcx
+        inc     dword ptr [r10].TSmallBlockType.LastFreeCount
+        mov     byte ptr [r10].TSmallBlockType.LastFreeLocked, false
+        movzx   eax, word ptr [r10].TSmallBlockType.BlockSize
+        ret
+@Void:
+        xor     eax, eax
+        ret
+@Slow:
+        mov     rcx, r11
+        {$endif}
+        jmp     _FreeMemSlow
+end;
+
+{$endif MSWINDOWS}
+
 // warning: FPC signature is not the same than Delphi: requires "var P"
+{$ifdef MSWINDOWS}
+function _ReallocMemSlow(var P: pointer; Size: PtrUInt): pointer;
+{$else}
 function _ReallocMem(var P: pointer; Size: PtrUInt): pointer;
+{$endif MSWINDOWS}
   {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
 {$ifdef MSWINDOWS} // keep RSP and its Win64 shadow space under FPC control
 var
@@ -4594,6 +4783,49 @@ asm
         pop     rbx
         {$endif MSWINDOWS}
 end;
+
+{$ifdef MSWINDOWS}
+
+// Reallocating into the existing capacity is a leaf operation.  Keep it out
+// of the general 64-byte frame used by copy/free and in-place medium resizing.
+function _ReallocMem(var P: pointer; Size: PtrUInt): pointer;
+  nostackframe; assembler;
+asm
+        mov     r8, [rcx]
+        test    rdx, rdx
+        jz      @Slow
+        test    r8, r8
+        jz      @Slow
+        mov     r9, [r8 - BlockHeaderSize]
+        test    r9b, IsFreeBlockFlag + IsMediumBlockFlag + IsLargeBlockFlag
+        jnz     @NotSmall
+        mov     r10, [r9].TSmallBlockPoolHeader.BlockType
+        movzx   eax, word ptr [r10].TSmallBlockType.BlockSize
+        sub     eax, BlockHeaderSize
+        cmp     rax, rdx
+        jb      @Slow
+        lea     r10, [rdx * 4 + SmallBlockDownsizeCheckAdder]
+        cmp     r10, rax
+        jb      @Slow
+        mov     rax, r8
+        ret
+@NotSmall:
+        test    r9b, IsFreeBlockFlag + IsLargeBlockFlag
+        jnz     @Slow
+        and     r9d, DropMediumAndLargeFlagsMask
+        sub     r9d, BlockHeaderSize
+        cmp     rdx, r9
+        ja      @Slow
+        lea     r10, [rdx + rdx]
+        cmp     r10, r9
+        jb      @Slow
+        mov     rax, r8
+        ret
+@Slow:
+        jmp     _ReallocMemSlow
+end;
+
+{$endif MSWINDOWS}
 
 function _AllocMem(Size: PtrUInt): pointer;
   {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
