@@ -1,0 +1,56 @@
+# Delphi and Free Pascal build products
+*.dcu
+*.ppu
+*.o
+*.obj
+*.a
+*.dll
+*.so
+*.exe
+*.bpl
+*.dcp
+*.map
+*.drc
+*.rsm
+*.tds
+*.rsj
+*.compiled
+*.lps
+*.bak
+*.~*
+
+# The pinned static-link bundle is source input, not build output.
+!/static/**/*.o
+!/static/**/*.obj
+!/static/**/*.a
+!/static/**/*.dll
+
+# Local compiler and IDE state
+bin/
+dcu/
+dcu-*/
+units/
+__history/
+__recovery/
+.idea/
+.vscode/
+*.local
+*.identcache
+*.projdata
+*.dsk
+*.stat
+*.code-workspace
+
+# Tool caches and temporary output
+__pycache__/
+*.pyc
+.pytest_cache/
+.moonbot/
+.qualification/
+ppas.bat
+ppas.sh
+link*.res
+*.orig
+*.rej
+*.patch
+*.diff

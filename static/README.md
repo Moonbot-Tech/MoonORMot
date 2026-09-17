@@ -12,7 +12,11 @@ Anyway, https://github.com/synopse/mORMot2/releases will maintain a list of offi
 
 Note that on POSIX systems, you may want to download and decompress `mormot2static.tgz` instead of `mormot2static.7z`, which is smaller, but less native.
 
-For safety, the SHA-256 checksums of the current version of the downloaded binary files, as published in our https://synopse.info/files server, are available in [the `dev.sha256` file of this folder](dev.sha256).
+For safety, the archive checksums originally published by Synopse are kept in
+[`dev.sha256`](dev.sha256). Exact hashes of every binary committed to this
+product repository are recorded in [`MANIFEST.sha256`](MANIFEST.sha256), with
+origin and licensing details in
+[`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
 
 ## Static Linking
@@ -47,4 +51,6 @@ In doubt, download latest https://synopse.info/files/mormot2static.7z and extrac
 
 ## Compile From Source
 
-Take a look at [the `/res/static` folder](../res/static) for the reference C source code used to generate those static files. 
+The reference C/assembly source and build recipes are available in the pinned
+upstream [`res/static`](https://github.com/synopse/mORMot2/tree/38874e16c03373a5275b959fdb1cc38d5597f67f/res/static)
+tree. See [`../PROVENANCE.md`](../PROVENANCE.md) before replacing any binary.
