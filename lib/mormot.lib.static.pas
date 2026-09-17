@@ -201,30 +201,30 @@ implementation
 
 {$ifdef OSWINDOWS}
   {$ifdef CPU64}
-    {$linklib ..\..\static\x86_64-win64\libkernel32.a}
+    {$linklib ..\static\x86_64-win64\libkernel32.a}
   {$else}
-    {$linklib ..\..\static\i386-win32\libkernel32.a}
+    {$linklib ..\static\i386-win32\libkernel32.a}
   {$endif CPU64}
 {$endif OSWINDOWS}
 
 {$ifdef OSANDROID}
   {$ifdef CPUAARCH64}
-    {$linklib ..\..\static\aarch64-android\libgcc.a}
+    {$linklib ..\static\aarch64-android\libgcc.a}
   {$endif CPUAARCH64}
   {$ifdef CPUARM}
-    {$linklib ..\..\static\arm-android\libgcc.a}
+    {$linklib ..\static\arm-android\libgcc.a}
   {$endif CPUARM}
   {$ifdef CPUX64}
-    {$linklib ..\..\static\x86_64-android\libgcc.a}
+    {$linklib ..\static\x86_64-android\libgcc.a}
   {$endif CPUX64}
 {$endif OSANDROID}
 
 {$ifdef OSLINUX}
   {$ifdef CPUAARCH64}
-    {$linklib ..\..\static\aarch64-linux\libgcc.a}
+    {$linklib ..\static\aarch64-linux\libgcc.a}
   {$endif CPUAARCH64}
   {$ifdef CPUARM}
-    {$linklib ..\..\static\arm-linux\libgcc.a}
+    {$linklib ..\static\arm-linux\libgcc.a}
   {$endif CPUARM}
 {$endif OSLINUX}
 

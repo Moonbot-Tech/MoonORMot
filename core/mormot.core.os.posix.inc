@@ -4080,7 +4080,7 @@ end;
 // (it should work on other POSIX ABI, but was reported to fail)
 
 {$define ARMV8STATIC}
-{$L ..\..\static\aarch64-linux\armv8.o} // ARMv8 crc32c Linux code
+{$L ..\static\aarch64-linux\armv8.o} // ARMv8 crc32c Linux code
 
 function crc32carm64(crc: cardinal; buf: PAnsiChar; len: cardinal): cardinal; external;
 function crc32arm64(crc: cardinal; buf: PAnsiChar; len: cardinal): cardinal; external;

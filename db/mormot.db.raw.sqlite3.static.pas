@@ -185,36 +185,36 @@ uses
 
   {$ifdef OSWINDOWS}
     {$ifdef CPU64}
-      {$L ..\..\static\x86_64-win64\sqlite3.o}
+      {$L ..\static\x86_64-win64\sqlite3.o}
     {$else}
-      {$L ..\..\static\i386-win32\sqlite3.o}
+      {$L ..\static\i386-win32\sqlite3.o}
     {$endif CPU64}
   {$endif OSWINDOWS}
 
   {$ifdef OSDARWIN}
     {$ifdef CPUAARCH64}
-      {$L ..\..\static\aarch64-darwin\sqlite3.o}
+      {$L ..\static\aarch64-darwin\sqlite3.o}
     {$endif CPUAARCH64}
     {$ifdef CPUX86}
-      {$linklib ..\..\static\i386-darwin\libsqlite3.a}
+      {$linklib ..\static\i386-darwin\libsqlite3.a}
     {$endif CPUX86}
     {$ifdef CPUX64}
-      {$linklib ..\..\static\x86_64-darwin\libsqlite3.a}
+      {$linklib ..\static\x86_64-darwin\libsqlite3.a}
     {$endif CPUX64}
   {$endif OSDARWIN}
 
   {$ifdef OSANDROID}
     {$ifdef CPUAARCH64}
-      {$L ..\..\static\aarch64-android\sqlite3.o}
+      {$L ..\static\aarch64-android\sqlite3.o}
     {$endif CPUAARCH64}
     {$ifdef CPUARM}
-      {$L ..\..\static\arm-android\sqlite3.o}
+      {$L ..\static\arm-android\sqlite3.o}
     {$endif CPUARM}
     {$ifdef CPUX86}
-      {$L ..\..\static\i386-android\sqlite3.o}
+      {$L ..\static\i386-android\sqlite3.o}
     {$endif CPUX86}
     {$ifdef CPUX64}
-      {$L ..\..\static\x86_64-android\sqlite3.o}
+      {$L ..\static\x86_64-android\sqlite3.o}
       // x86_64-linux-android-ld.bfd: final link failed
       // (Nonrepresentable section on output)
     {$endif CPUX64}
@@ -222,36 +222,36 @@ uses
 
   {$ifdef OSFREEBSD}
     {$ifdef CPUX86}
-    {$L ..\..\static\i386-freebsd\sqlite3.o}
+    {$L ..\static\i386-freebsd\sqlite3.o}
     {$endif CPUX86}
     {$ifdef CPUX64}
-    {$L ..\..\static\x86_64-freebsd\sqlite3.o}
+    {$L ..\static\x86_64-freebsd\sqlite3.o}
     {$endif CPUX64}
   {$endif OSFREEBSD}
 
   {$ifdef OSOPENBSD}
     {$ifdef CPUX86}
-      {$L ..\..\static\i386-openbsd\sqlite3.o}
+      {$L ..\static\i386-openbsd\sqlite3.o}
     {$endif CPUX86}
     {$ifdef CPUX64}
-      {$L ..\..\static\x86_64-openbsd\sqlite3.o}
+      {$L ..\static\x86_64-openbsd\sqlite3.o}
     {$endif CPUX64}
   {$endif OSOPENBSD}
 
   {$ifdef OSLINUX}
     {$ifdef CPUAARCH64}
-      {$L ..\..\static\aarch64-linux\sqlite3.o}
-      {$linklib ..\..\static\aarch64-linux\libgcc.a}
+      {$L ..\static\aarch64-linux\sqlite3.o}
+      {$linklib ..\static\aarch64-linux\libgcc.a}
     {$endif CPUAARCH64}
     {$ifdef CPUARM}
-      {$L ..\..\static\arm-linux\sqlite3.o}
-      {$linklib ..\..\static\arm-linux\libgcc.a}
+      {$L ..\static\arm-linux\sqlite3.o}
+      {$linklib ..\static\arm-linux\libgcc.a}
     {$endif CPUARM}
     {$ifdef CPUX86}
-      {$L ..\..\static\i386-linux\sqlite3.o}
+      {$L ..\static\i386-linux\sqlite3.o}
     {$endif CPUX86}
     {$ifdef CPUX64}
-      {$L ..\..\static\x86_64-linux\sqlite3.o}
+      {$L ..\static\x86_64-linux\sqlite3.o}
     {$endif CPUX64}
   {$endif OSLINUX}
 
@@ -261,10 +261,10 @@ uses
   {$ifdef OSWINDOWS}
     {$ifdef CPU64}
       // compiled with C++ Builder 10.3 Community Edition bcc64
-      {$L ..\..\static\delphi\sqlite3.o}
+      {$L ..\static\delphi\sqlite3.o}
     {$else}
       // compiled with the free Borland C++ Compiler 5.5
-      {$L ..\..\static\delphi\sqlite3.obj}
+      {$L ..\static\delphi\sqlite3.obj}
     {$endif CPU64}
   {$endif OSWINDOWS}
 

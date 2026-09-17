@@ -600,36 +600,36 @@ end;
 {$ifdef FPC} // we supply our own static zlib files in coff format for Windows
 
   {$ifdef WIN32}
-    {$L ..\..\static\i386-win32\deflate.o}
-    {$L ..\..\static\i386-win32\trees.o}
-    {$L ..\..\static\i386-win32\zutil.o}
-    {$L ..\..\static\i386-win32\inffast.o}
-    {$L ..\..\static\i386-win32\inflate.o}
-    {$L ..\..\static\i386-win32\inftrees.o}
-    {$L ..\..\static\i386-win32\adler32.o}
-    {$L ..\..\static\i386-win32\crc32.o}
+    {$L ..\static\i386-win32\deflate.o}
+    {$L ..\static\i386-win32\trees.o}
+    {$L ..\static\i386-win32\zutil.o}
+    {$L ..\static\i386-win32\inffast.o}
+    {$L ..\static\i386-win32\inflate.o}
+    {$L ..\static\i386-win32\inftrees.o}
+    {$L ..\static\i386-win32\adler32.o}
+    {$L ..\static\i386-win32\crc32.o}
   {$endif WIN32}
 
   {$ifdef WIN64}
-    {$L ..\..\static\x86_64-win64\inffast.o}  
-    {$L ..\..\static\x86_64-win64\inftrees.o}
-    {$L ..\..\static\x86_64-win64\inflate.o}
-    {$L ..\..\static\x86_64-win64\deflate.o}
-    {$L ..\..\static\x86_64-win64\trees.o}
-    {$L ..\..\static\x86_64-win64\zutil.o}
-    {$L ..\..\static\x86_64-win64\adler32.o}
-    {$L ..\..\static\x86_64-win64\crc32.o}
+    {$L ..\static\x86_64-win64\inffast.o}
+    {$L ..\static\x86_64-win64\inftrees.o}
+    {$L ..\static\x86_64-win64\inflate.o}
+    {$L ..\static\x86_64-win64\deflate.o}
+    {$L ..\static\x86_64-win64\trees.o}
+    {$L ..\static\x86_64-win64\zutil.o}
+    {$L ..\static\x86_64-win64\adler32.o}
+    {$L ..\static\x86_64-win64\crc32.o}
   {$endif WIN64}
 
 {$else} // for Delphi Win32 - Delphi 7 has no reliable zlib.pas
 
-  {$L ..\..\static\delphi\zlibdeflate.obj}
-  {$L ..\..\static\delphi\zlibtrees.obj}
-  {$L ..\..\static\delphi\zlibinflate.obj}
-  {$L ..\..\static\delphi\zlibinftrees.obj}
-  {$L ..\..\static\delphi\zlibadler32.obj}
-  {$L ..\..\static\delphi\zlibcrc32.obj}
-  {$L ..\..\static\delphi\zlibinffast.obj}
+  {$L ..\static\delphi\zlibdeflate.obj}
+  {$L ..\static\delphi\zlibtrees.obj}
+  {$L ..\static\delphi\zlibinflate.obj}
+  {$L ..\static\delphi\zlibinftrees.obj}
+  {$L ..\static\delphi\zlibadler32.obj}
+  {$L ..\static\delphi\zlibcrc32.obj}
+  {$L ..\static\delphi\zlibinffast.obj}
 
 // inlined zutil.obj for Delphi Win32
 
@@ -928,34 +928,34 @@ function libdeflate_crc32;                  external;
 // maybe due to the gcc compiler we use or unefficient compilation flags
 {$ifdef OSLINUX}
   {$ifdef CPUX86}
-    {$linklib ..\..\static\i386-linux\libdeflatepas.a}
+    {$linklib ..\static\i386-linux\libdeflatepas.a}
   {$endif CPUX86}
   {$ifdef CPUX64}
-    {$linklib ..\..\static\x86_64-linux\libdeflatepas.a}
+    {$linklib ..\static\x86_64-linux\libdeflatepas.a}
   {$endif CPUX64}
   {$ifdef CPUAARCH64}
     // compiles but untested yet
-    {$L ..\..\static\aarch64-linux\libdeflate_u.o}  // utils.o
-    {$L ..\..\static\aarch64-linux\libdeflate_cf.o} // cpu_features.o
-    {$L ..\..\static\aarch64-linux\libdeflate_a.o}  // adler32.o
-    {$L ..\..\static\aarch64-linux\libdeflate_c.o}  // crc32.o
-    {$L ..\..\static\aarch64-linux\libdeflate_dc.o} // deflate_compress.o
-    {$L ..\..\static\aarch64-linux\libdeflate_dd.o} // deflate_decompress.o
-    {$L ..\..\static\aarch64-linux\libdeflate_zc.o} // zlib_compress.o
-    {$L ..\..\static\aarch64-linux\libdeflate_zd.o} // zlib_decompress.o
-    {$linklib ..\..\static\aarch64-linux\libgcc.a}
+    {$L ..\static\aarch64-linux\libdeflate_u.o}  // utils.o
+    {$L ..\static\aarch64-linux\libdeflate_cf.o} // cpu_features.o
+    {$L ..\static\aarch64-linux\libdeflate_a.o}  // adler32.o
+    {$L ..\static\aarch64-linux\libdeflate_c.o}  // crc32.o
+    {$L ..\static\aarch64-linux\libdeflate_dc.o} // deflate_compress.o
+    {$L ..\static\aarch64-linux\libdeflate_dd.o} // deflate_decompress.o
+    {$L ..\static\aarch64-linux\libdeflate_zc.o} // zlib_compress.o
+    {$L ..\static\aarch64-linux\libdeflate_zd.o} // zlib_decompress.o
+    {$linklib ..\static\aarch64-linux\libgcc.a}
   {$endif CPUAARCH64}
   {$ifdef CPUARM}
     // current supplied .o don't link yet
-    {$L ..\..\static\arm-linux\libdeflate_u.o}  // utils.o
-    {$L ..\..\static\arm-linux\libdeflate_cf.o} // cpu_features.o
-    {$L ..\..\static\arm-linux\libdeflate_a.o}  // adler32.o
-    {$L ..\..\static\arm-linux\libdeflate_c.o}  // crc32.o
-    {$L ..\..\static\arm-linux\libdeflate_dc.o} // deflate_compress.o
-    {$L ..\..\static\arm-linux\libdeflate_dd.o} // deflate_decompress.o
-    {$L ..\..\static\arm-linux\libdeflate_zc.o} // zlib_compress.o
-    {$L ..\..\static\arm-linux\libdeflate_zd.o} // zlib_decompress.o
-    {$linklib ..\..\static\arm-linux\libgcc.a}
+    {$L ..\static\arm-linux\libdeflate_u.o}  // utils.o
+    {$L ..\static\arm-linux\libdeflate_cf.o} // cpu_features.o
+    {$L ..\static\arm-linux\libdeflate_a.o}  // adler32.o
+    {$L ..\static\arm-linux\libdeflate_c.o}  // crc32.o
+    {$L ..\static\arm-linux\libdeflate_dc.o} // deflate_compress.o
+    {$L ..\static\arm-linux\libdeflate_dd.o} // deflate_decompress.o
+    {$L ..\static\arm-linux\libdeflate_zc.o} // zlib_compress.o
+    {$L ..\static\arm-linux\libdeflate_zd.o} // zlib_decompress.o
+    {$linklib ..\static\arm-linux\libgcc.a}
   {$endif CPUARM}
   const
     _PU = '';
@@ -963,14 +963,14 @@ function libdeflate_crc32;                  external;
 
 {$ifdef OSWINDOWS}
   {$ifdef CPUX86}
-    {$linklib ..\..\static\i386-win32\libdeflatepas.a}
+    {$linklib ..\static\i386-win32\libdeflatepas.a}
     const
       _PU = '_';
   {$endif CPUX86}
   // note: FPC 3.2 + Win64 internal linker makes internal error 200603061
   // - to compile on Win64, try the -Xe option or a newer FPC
   {$ifdef CPUX64}
-    {$linklib ..\..\static\x86_64-win64\libdeflatepas.a}
+    {$linklib ..\static\x86_64-win64\libdeflatepas.a}
     const
       _PU = '';
   {$endif CPUX64}

@@ -1740,26 +1740,26 @@ uses
   {$ifdef OSLINUX}
 
     {$ifdef CPUX86}
-      {$L  ..\..\static\i386-linux\quickjs.o}
+      {$L  ..\static\i386-linux\quickjs.o}
     {$endif CPUX86}
     {$ifdef CPUX64}
-      {$L ..\..\static\x86_64-linux\quickjs.o}
+      {$L ..\static\x86_64-linux\quickjs.o}
     {$endif CPUX64}
     {$ifdef CPUAARCH64}
-      {$L ..\..\static\aarch64-linux\quickjs.o}
+      {$L ..\static\aarch64-linux\quickjs.o}
     {$endif CPUAARCH64}
     {$ifdef CPUARM}
-      {$L ..\..\static\arm-linux\quickjs.o}
+      {$L ..\static\arm-linux\quickjs.o}
     {$endif CPUARM}
 
   {$endif OSLINUX}
 
   {$ifdef OSWINDOWS}
     {$ifdef CPUX86}
-      {$L ..\..\static\i386-win32\quickjs.o}
+      {$L ..\static\i386-win32\quickjs.o}
     {$endif CPUX86}
     {$ifdef CPUX64}
-      {$L ..\..\static\x86_64-win64\quickjs.o}
+      {$L ..\static\x86_64-win64\quickjs.o}
     {$endif CPUX64}
   {$endif OSWINDOWS}
 
@@ -1767,10 +1767,10 @@ uses
 
   // Win32/Win64 static files from mingw  \o/
   {$ifdef CPUX86}
-    {$L ..\..\static\delphi\quickjs.obj}
+    {$L ..\static\delphi\quickjs.obj}
   {$endif CPUX86}
   {$ifdef CPUX64}
-    {$L ..\..\static\delphi\quickjs.o}
+    {$L ..\static\delphi\quickjs.o}
   {$endif CPUX64}
 
 // note: Delphi expects the dependencies to be in the very same unit

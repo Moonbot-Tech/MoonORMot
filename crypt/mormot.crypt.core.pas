@@ -4328,7 +4328,7 @@ procedure aesdecryptarm192(rk, bi, bo: pointer); external;
 procedure aesdecryptarm256(rk, bi, bo: pointer); external;
 procedure gf_mul_h_arm(a, b: pointer); external;
 
-{$L ..\..\static\aarch64-linux\sha256armv8.o}
+{$L ..\static\aarch64-linux\sha256armv8.o}
 procedure sha256_block_data_order(ctx, bi: pointer; count: PtrInt); external;
 
 {$endif CPUAARCH64}

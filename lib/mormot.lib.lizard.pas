@@ -313,9 +313,9 @@ function Lizard_decompress_safe_usingDict(src, dst: pointer;
   {$ifdef FPC}
     {$ifdef OSWINDOWS}
     // note: gcc .o files don't work under Win64 for Delphi :(
-    {$linklib ..\..\static\x86_64-win64\liblizard.a}
+    {$linklib ..\static\x86_64-win64\liblizard.a}
     {$else}
-    {$linklib ../../static/x86_64-linux/liblizard.a}
+    {$linklib ../static/x86_64-linux/liblizard.a}
     {$endif OSWINDOWS}
   {$endif FPC}
 {$endif CPUX64}
@@ -323,22 +323,22 @@ function Lizard_decompress_safe_usingDict(src, dst: pointer;
 {$ifdef CPUX86}
   {$ifdef FPC}
     {$ifdef OSWINDOWS}
-    {$linklib ..\..\static\i386-win32\liblizard.a}
+    {$linklib ..\static\i386-win32\liblizard.a}
     {$else}
-    {$linklib ../../static/i386-linux/liblizard.a}
+    {$linklib ../static/i386-linux/liblizard.a}
     {$endif OSWINDOWS}
   {$endif FPC}
 {$endif CPUX86}
 
 {$ifdef CPUARM}
   {$ifdef FPC}
-    {$linklib ../../static/arm-linux/liblizard.a}
+    {$linklib ../static/arm-linux/liblizard.a}
   {$endif FPC}
 {$endif CPUARM}
 
 {$ifdef CPUAARCH64}
   {$ifdef FPC}
-    {$linklib ../../static/aarch64-linux/liblizard.a}
+    {$linklib ../static/aarch64-linux/liblizard.a}
   {$endif FPC}
 {$endif CPUAARCH64}
 
