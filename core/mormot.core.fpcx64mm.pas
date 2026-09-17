@@ -2517,13 +2517,15 @@ end;
 {$endif MSWINDOWS}
 
 procedure LockMediumBlocks(dummy: cardinal);
-  {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
-{$ifdef MSWINDOWS} // keep RSP and its Win64 shadow space under FPC control
-var
-  save_rsi, save_rdi, save_r10, save_r11: PtrUInt;
-{$endif MSWINDOWS}
+  {$ifdef MSWINDOWS} nostackframe; {$else}
+  {$ifdef NOSFRAME} nostackframe; {$endif} {$endif} assembler;
 // on input/output: r10=TMediumBlockInfo
 asm
+        {$ifdef MSWINDOWS}
+        sub     rsp, 56 // 32-byte shadow + r10/r11 locals + alignment
+        .seh_stackalloc 56
+        .seh_endprologue
+        {$endif MSWINDOWS}
         {$ifdef FPCMM_MEDIUMPREFETCH}
         // since we are waiting for the lock, prefetch one medium memory chunk
         mov     rcx, r10
@@ -2540,10 +2542,8 @@ asm
         cmp     qword ptr [rcx].TMediumBlockInfo.Prefetch, rdx
         jnz     @s2
         {$ifdef MSWINDOWS}
-        mov     save_rsi, rsi
-        mov     save_rdi, rdi
-        mov     save_r10, r10
-        mov     save_r11, r11
+        mov     [rsp + 32], r10
+        mov     [rsp + 40], r11
         {$else}
         push    rsi
         push    rdi
@@ -2553,10 +2553,8 @@ asm
         mov     dummy, MediumBlockPoolSizeMem
         call    OsAllocMedium // mmap() is usually very fast
         {$ifdef MSWINDOWS}
-        mov     r11, save_r11
-        mov     r10, save_r10
-        mov     rdi, save_rdi
-        mov     rsi, save_rsi
+        mov     r11, [rsp + 40]
+        mov     r10, [rsp + 32]
         {$else}
         pop     r11
         pop     r10
@@ -2608,6 +2606,10 @@ asm
         inc     qword ptr [rax].TMMStatus.Medium.SleepCount
         jmp     @s
 @ok:
+        {$ifdef MSWINDOWS}
+        add     rsp, 56
+        ret
+        {$endif MSWINDOWS}
 end;
 
 procedure InsertMediumBlockIntoBin; nostackframe; assembler;
@@ -3071,15 +3073,21 @@ function _GetMemSlow(size: PtrUInt): pointer;
 {$else}
 function _GetMem(size: PtrUInt): pointer;
 {$endif MSWINDOWS}
-  {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
-{$ifdef MSWINDOWS} // keep RSP and its Win64 shadow space under FPC control
-var
-  save_rsi, save_rdi, save_rbx: PtrUInt;
-{$endif MSWINDOWS}
+  {$ifdef MSWINDOWS} nostackframe; {$else}
+  {$ifdef NOSFRAME} nostackframe; {$endif} {$endif} assembler;
 asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         {$ifdef MSWINDOWS}
-        mov     save_rsi, rsi
-        mov     save_rdi, rdi
+        // FPC equivalent of Delphi/MASM .params/.pushnv: reserve the Win64
+        // shadow space and describe every non-volatile save to the unwinder.
+        push    rsi
+        .seh_pushreg rsi
+        push    rdi
+        .seh_pushreg rdi
+        push    rbx
+        .seh_pushreg rbx
+        sub     rsp, 32 // Win64 shadow space; RSP stays 16-byte aligned
+        .seh_stackalloc 32
+        .seh_endprologue
         {$endif MSWINDOWS}
         // Since most allocations are for small blocks, determine small block type
         lea     rsi, [rip + SmallBlockInfo]
@@ -3434,9 +3442,7 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         call    LockMediumBlocks
 @MediumLocked1:
         // From now own rbx=TSmallBlockType, so we need to preserve it
-        {$ifdef MSWINDOWS}
-        mov     save_rbx, rbx
-        {$else}
+        {$ifndef MSWINDOWS}
         push    rbx
         {$endif MSWINDOWS}
         mov     rbx, rsi
@@ -3580,9 +3586,7 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         // ---------- MEDIUM block allocation ----------
 @NotTinySmallBlock:
         // from now on, we may use the rbx register
-        {$ifdef MSWINDOWS}
-        mov     save_rbx, rbx
-        {$else}
+        {$ifndef MSWINDOWS}
         push    rbx
         {$endif MSWINDOWS}
         // Do we need a Large block?
@@ -3787,9 +3791,11 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         call    AllocateLargeBlock
 @Done:  // restore registers and the stack frame before ret
         {$ifdef MSWINDOWS}
-        mov     rbx, save_rbx
-@Quit:  mov     rdi, save_rdi
-        mov     rsi, save_rsi
+@Quit:  add     rsp, 32
+        pop     rbx
+        pop     rdi
+        pop     rsi
+        ret
         {$else}
         pop     rbx
 @Quit:
@@ -3882,19 +3888,22 @@ end;
 {$endif MSWINDOWS}
 
 function FreeMediumBlock(arg1, arg2: pointer): PtrUInt;
-  {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
-{$ifdef MSWINDOWS} // keep RSP and its Win64 shadow space under FPC control
-var
-  save_rbx, save_blocksize: PtrUInt;
-{$endif MSWINDOWS}
+  {$ifdef MSWINDOWS} nostackframe; {$else}
+  {$ifdef NOSFRAME} nostackframe; {$endif} {$endif} assembler;
 // rcx=P rdx=[P-BlockHeaderSize] r10=TMediumBlockInfo
 // (arg1/arg2 are used only for proper call of pascal functions below on all ABI)
 asm
+        {$ifdef MSWINDOWS}
+        push    rbx
+        .seh_pushreg rbx
+        sub     rsp, 48 // 32-byte shadow + block-size local + alignment
+        .seh_stackalloc 48
+        .seh_endprologue
+        {$endif MSWINDOWS}
         // Drop the flags, and set r11=P rbx=blocksize
         and     rdx, DropMediumAndLargeFlagsMask
         {$ifdef MSWINDOWS}
-        mov     save_rbx, rbx
-        mov     save_blocksize, rdx
+        mov     [rsp + 32], rdx
         {$else}
         push    rbx
         push    rdx // save blocksize
@@ -4018,8 +4027,10 @@ asm
         mov     byte ptr [r10 + TMediumBlockInfo.Locked], false
 @Quit:  // restore registers and the stack frame
         {$ifdef MSWINDOWS}
-        mov     rax, save_blocksize
-        mov     rbx, save_rbx
+        mov     rax, [rsp + 32]
+        add     rsp, 48
+        pop     rbx
+        ret
         {$else}
         pop     rax // medium block size
         pop     rbx
@@ -4037,12 +4048,16 @@ function _FreeMemSlow(P: pointer): PtrUInt;
 {$else}
 function _FreeMem(P: pointer): PtrUInt;
 {$endif MSWINDOWS}
-  {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
-{$ifdef MSWINDOWS} // keep RSP and its Win64 shadow space under FPC control
-var
-  save_rbx: PtrUInt;
-{$endif MSWINDOWS}
+  {$ifdef MSWINDOWS} nostackframe; {$else}
+  {$ifdef NOSFRAME} nostackframe; {$endif} {$endif} assembler;
 asm     // P = rcx on Windows, P = rdi on SystemV
+        {$ifdef MSWINDOWS}
+        push    rbx
+        .seh_pushreg rbx
+        sub     rsp, 32 // Win64 shadow space; RSP stays 16-byte aligned
+        .seh_stackalloc 32
+        .seh_endprologue
+        {$endif MSWINDOWS}
         {$ifndef MSWINDOWS}
         mov     rcx, P
         {$endif MSWINDOWS}
@@ -4064,7 +4079,6 @@ asm     // P = rcx on Windows, P = rdi on SystemV
         // Keep TSmallBlockType in the register best suited to each ABI:
         // rbx on Win64 and caller-saved rsi on SystemV.
         {$ifdef MSWINDOWS}
-        mov     save_rbx, rbx
         mov     rbx, [rdx].TSmallBlockPoolHeader.BlockType
         {$else}
         mov     rsi, [rdx].TSmallBlockPoolHeader.BlockType
@@ -4312,7 +4326,6 @@ asm     // P = rcx on Windows, P = rdi on SystemV
         mov     byte ptr [rbx].TSmallBlockType.LastFreeLocked, false
         movzx   eax, word ptr [rbx].TSmallBlockType.BlockSize
 @Done:  // restore rbx and the stack frame before ret
-        mov     rbx, save_rbx
         {$else}
         inc     dword ptr [rsi].TSmallBlockType.LastFreeCount
         mov     byte ptr [rsi].TSmallBlockType.LastFreeLocked, false
@@ -4320,6 +4333,11 @@ asm     // P = rcx on Windows, P = rdi on SystemV
 @Done:
         {$endif MSWINDOWS}
 @Quit:
+        {$ifdef MSWINDOWS}
+        add     rsp, 32
+        pop     rbx
+        ret
+        {$endif MSWINDOWS}
 end;
 
 {$ifdef MSWINDOWS}
@@ -4420,19 +4438,22 @@ function _ReallocMemSlow(var P: pointer; Size: PtrUInt): pointer;
 {$else}
 function _ReallocMem(var P: pointer; Size: PtrUInt): pointer;
 {$endif MSWINDOWS}
-  {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
-{$ifdef MSWINDOWS} // keep RSP and its Win64 shadow space under FPC control
-var
-  save_p, save_rbx, save_r14, save_rsi, save_rdi: pointer;
-  save_rax, save_rcx, save_rdx: PtrUInt;
-{$endif MSWINDOWS}
+  {$ifdef MSWINDOWS} nostackframe; {$else}
+  {$ifdef NOSFRAME} nostackframe; {$endif} {$endif} assembler;
 asm
         {$ifdef MSWINDOWS}
-        mov     save_p, P
-        mov     save_rbx, rbx
-        mov     save_r14, r14
-        mov     save_rsi, rsi
-        mov     save_rdi, rdi
+        push    rbx
+        .seh_pushreg rbx
+        push    r14
+        .seh_pushreg r14
+        push    rsi
+        .seh_pushreg rsi
+        push    rdi
+        .seh_pushreg rdi
+        sub     rsp, 72 // 32-byte shadow + 4 local qwords + alignment pad
+        .seh_stackalloc 72
+        mov     [rsp + 32], rcx // var P address
+        .seh_endprologue
         {$else}
         mov     rdx, Size
         push    rbx
@@ -4473,7 +4494,7 @@ asm
         {$endif NOSFRAME}
 @VoidSize:
         {$ifdef MSWINDOWS}
-        mov     save_rax, rdx // rdx=0 -> result=nil after _FreeMem
+        mov     [rsp + 40], rdx // rdx=0 -> result=nil after _FreeMem
         {$else}
         push    rdx           // to set P=nil
         {$endif MSWINDOWS}
@@ -4490,9 +4511,9 @@ asm
         cmp     rdx, P
         cmova   P, rdx
         {$ifdef MSWINDOWS}
-        mov     save_rdx, rdx
+        mov     [rsp + 56], rdx
         call    _GetMem
-        mov     rdx, save_rdx
+        mov     rdx, [rsp + 56]
         {$else}
         push    rdx
         call    _GetMem
@@ -4514,7 +4535,7 @@ asm
 @MoveFreeMem:
         // copy and free: rax=New r14=P rbx=size-8
         {$ifdef MSWINDOWS}
-        mov     save_rax, rax
+        mov     [rsp + 40], rax
         {$else}
         push    rax
         {$endif MSWINDOWS}
@@ -4536,7 +4557,7 @@ asm
 @DoFree:mov     P, r14
         call    _FreeMem
         {$ifdef MSWINDOWS}
-        mov     rax, save_rax
+        mov     rax, [rsp + 40]
         {$else}
         pop     rax
         {$endif MSWINDOWS}
@@ -4691,12 +4712,12 @@ asm
         cmp     eax, MinimumMediumBlockSize
         jb      @MediumInPlaceNoNextRemove
         {$ifdef MSWINDOWS}
-        mov     save_rcx, rcx
-        mov     save_rdx, rdx
+        mov     [rsp + 48], rcx
+        mov     [rsp + 56], rdx
         mov     rcx, rdi
         call    RemoveMediumFreeBlock // rcx=APMediumFreeBlock
-        mov     rdx, save_rdx
-        mov     rcx, save_rcx
+        mov     rdx, [rsp + 56]
+        mov     rcx, [rsp + 48]
         {$else}
         push    rcx
         push    rdx
@@ -4770,12 +4791,14 @@ asm
 @Error: xor     eax, eax
 @Done:  // store rax new pointer value, and restore non-volatile registers
         {$ifdef MSWINDOWS}
-        mov     rcx, save_p
+        mov     rcx, [rsp + 32]
         mov     qword ptr [rcx], rax
-@Quit:  mov     r14, save_r14
-        mov     rbx, save_rbx
-        mov     rsi, save_rsi
-        mov     rdi, save_rdi
+@Quit:  add     rsp, 72
+        pop     rdi
+        pop     rsi
+        pop     r14
+        pop     rbx
+        ret
         {$else}
         pop     rcx
         mov     qword ptr [rcx], rax // store new pointer in var P
@@ -4828,17 +4851,17 @@ end;
 {$endif MSWINDOWS}
 
 function _AllocMem(Size: PtrUInt): pointer;
-  {$ifdef NOSFRAME} nostackframe; {$endif} assembler;
-{$ifdef MSWINDOWS} // keep RSP and its Win64 shadow space under FPC control
-var
-  save_rbx: PtrUInt;
-  {$ifdef FPCMM_ERMS}
-  save_rdi, save_rax: PtrUInt;
-  {$endif FPCMM_ERMS}
-{$endif MSWINDOWS}
+  {$ifdef MSWINDOWS} nostackframe; {$else}
+  {$ifdef NOSFRAME} nostackframe; {$endif} {$endif} assembler;
 asm
         {$ifdef MSWINDOWS}
-        mov     save_rbx, rbx
+        push    rbx
+        .seh_pushreg rbx
+        push    rdi
+        .seh_pushreg rdi
+        sub     rsp, 40 // 32-byte shadow + result local, aligned before calls
+        .seh_stackalloc 40
+        .seh_endprologue
         {$else}
         push    rbx
         {$endif MSWINDOWS}
@@ -4882,8 +4905,7 @@ asm
         // ERMS has a startup cost, but "rep stosd" is fast enough on all CPUs
 @erms:  mov     rcx, rbx
         {$ifdef MSWINDOWS}
-        mov     save_rax, rax
-        mov     save_rdi, rdi
+        mov     [rsp + 32], rax
         {$else}
         push    rax
         {$endif MSWINDOWS}
@@ -4895,15 +4917,17 @@ asm
         mov     qword ptr [rdx], rax
         rep stosd
         {$ifdef MSWINDOWS}
-        mov     rdi, save_rdi
-        mov     rax, save_rax
+        mov     rax, [rsp + 32]
         {$else}
         pop     rax
         {$endif MSWINDOWS}
         {$endif FPCMM_ERMS}
 @Done:  // restore rbx register and the stack frame before ret
         {$ifdef MSWINDOWS}
-        mov     rbx, save_rbx
+        add     rsp, 40
+        pop     rdi
+        pop     rbx
+        ret
         {$else}
         pop     rbx
         {$endif MSWINDOWS}
