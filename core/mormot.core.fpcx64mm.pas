@@ -2624,22 +2624,44 @@ asm
         sbb     ecx, ecx
         and     edx, ecx
         add     edx, MediumBlockBinCount - 1
+        {$ifdef MSWINDOWS}
+        // On Win64 keep twice the bin number: one lea replaces the hot
+        // mov+shift pair, shortens this block by two bytes and leaves its
+        // cmp/jne before byte 64. Keep the accepted Linux layout unchanged.
+        lea     r9, [rdx + rdx]
+        // Get the bin address in rcx (r9 * 8 = bin number * 16)
+        lea     rcx, [r10 + r9 * 8 + TMediumBlockInfo.Bins]
+        {$else}
         mov     r9, rdx
         // Get the bin address in rcx
         shl     edx, 4
         lea     rcx, [r10 + rdx + TMediumBlockInfo.Bins]
+        {$endif MSWINDOWS}
         // Bins are LIFO, se we insert this block as the first free block in the bin
         mov     rdx, TMediumFreeBlock[rcx].NextFreeBlock
         mov     TMediumFreeBlock[rax].PreviousFreeBlock, rcx
         mov     TMediumFreeBlock[rax].NextFreeBlock, rdx
+        {$ifdef LINUX}
+        // Medium-only placement inherited from the accepted RTL profile:
+        // keep the empty-bin compare and branch inside one 32-byte window.
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         mov     TMediumFreeBlock[rdx].PreviousFreeBlock, rax
+        {$ifdef LINUX}
+        db      $3E
+        {$endif LINUX}
         mov     TMediumFreeBlock[rcx].NextFreeBlock, rax
         // Was this bin empty?
         cmp     rdx, rcx
         jne     @Done
         // Get ecx=bin number, edx=group number
         mov     rcx, r9
+        {$ifdef MSWINDOWS}
+        shr     ecx, 1
+        mov     rdx, rcx
+        {$else}
         mov     rdx, r9
+        {$endif MSWINDOWS}
         shr     edx, 5
         // Flag this bin as not empty
         mov     eax, 1
@@ -3214,7 +3236,37 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         jnz     @NextTinyBlockArena1
         {$endif FPCMM_CMPBEFORELOCK}
   lock  cmpxchg byte ptr [rsi].TSmallBlockType.Locked, ah
+        {$if defined(LINUX) and defined(FPCMM_ASSUMEMULTITHREAD)}
+        // The lock is ours in the common case. Keep registration as the
+        // fall-through and put the arena retry behind its return.
+        jne     @NextTinyBlockArena1
+@GotLockOnSmallBlockType:
+        mov     rdx, [rsi].TSmallBlockType.NextPartiallyFreePool
+        add     [rsi].TSmallBlockType.GetmemCount, 1
+        mov     rax, [rdx].TSmallBlockPoolHeader.FirstFreeBlock
+        // This compare does not need DropSmallFlagsMask. Scheduling the
+        // constant after it replaces the accepted profile's five executed
+        // prefixes with useful work on the partially-free-pool path.
+        cmp     rdx, rsi
+        je      @TrySmallSequentialFeed
+        mov     rcx, DropSmallFlagsMask
+        add     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
+        and     rcx, [rax - BlockHeaderSize]
+        mov     [rdx].TSmallBlockPoolHeader.FirstFreeBlock, rcx
+        mov     [rax - BlockHeaderSize], rdx
+        jz      @RemoveSmallPool
+        mov     byte ptr [rsi].TSmallBlockType.Locked, false
+        {$ifdef NOSFRAME}
+        ret
+        // Dead bytes preserve the accepted retry-block placement without
+        // adding work to the overwhelmingly common tiny/small allocation.
+        db      $3E, $3E, $3E, $3E, $3E
+        {$else}
+        jmp     @Quit
+        {$endif NOSFRAME}
+        {$else}
         je      @GotLockOnSmallBlockType
+        {$ifend}
 @NextTinyBlockArena1:
         {$ifdef FPCMM_MS_LINUX_FASTGET}
         // rdx still holds the non-negative lookup index on the first failure;
@@ -3356,6 +3408,7 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         call    ReleaseCoreSafe
         jmp     @LockBlockTypeLoopRetry
         // ---------- TINY/SMALL block registration ----------
+        {$if not (defined(LINUX) and defined(FPCMM_ASSUMEMULTITHREAD))}
         {$ifndef FPCMM_ASSUMEMULTITHREAD}
 @GotLockOnSmallBlock:
         add     rsi, rcx
@@ -3383,6 +3436,7 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         {$else}
         jmp     @Quit // on Win64, a stack frame is required
         {$endif NOSFRAME}
+        {$ifend}
         {$ifndef FPCMM_MS_LINUX_FASTGET}
 @VoidSize:
         inc     size // "we always need to allocate something" (see RTL heap.inc)
@@ -3833,6 +3887,9 @@ asm
         shl     eax, NumTinyBlockTypesPO2 + SmallBlockTypePO2
         lea     r10, [rax + r10 + TSmallBlockInfo.Tiny - SizeOf(TTinyBlockTypes)]
         jmp     @TryLock
+        // Dead linear byte after the jump: shift both @Small and @TryLock
+        // without executing padding on either allocation path.
+        db      $3E
 @Small:
         lea     r10, [r8 + rcx + TSmallBlockInfo.Small]
 @TryLock:
@@ -3925,11 +3982,32 @@ asm
         pause
   lock  cmpxchg byte ptr [rcx].TMediumBlockInfo.LastFreeLocked, ah
         jne     @Atom0
+        {$ifdef MSWINDOWS}
+        // One cold prefix moves the hand-off jump itself off byte 31.
+        db      $3E
+        {$else}
+        // Contended hand-off is cold. Its useful stores carry the accepted
+        // profile's placement so the uncontended coalescing path stays clean.
+        db      $3E, $3E, $3E
+        {$endif MSWINDOWS}
         mov     rax, [rcx].TMediumBlockInfo.LastFree
+        {$ifdef LINUX}
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         mov     [r11], rax // use freed buffer as next linked list slot
+        {$ifdef LINUX}
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         mov     [rcx].TMediumBlockInfo.LastFree, r11 // in list
+        {$ifdef LINUX}
+        db      $3E, $3E
+        {$endif LINUX}
         mov     byte ptr [rcx + TMediumBlockInfo.LastFreeLocked], false
         jmp     @Quit
+        {$ifdef MSWINDOWS}
+        // Dead bytes after the jump finish shifting the uncontended hot block.
+        db      $3E, $3E
+        {$endif MSWINDOWS}
 @MediumBlocksLocked:
         // We acquired the lock: get rcx = next block size and flags
         mov     rcx, [r11 + rbx - BlockHeaderSize]
@@ -3980,11 +4058,22 @@ asm
 @NextBlockIsFree:
         // Get rax = next block address, rbx = end of the block
         lea     rax, [r11 + rbx]
+        {$ifdef MSWINDOWS}
+        // Keep the target close enough for the forward jne above to remain
+        // short; moving these bytes before the label creates a long-jump
+        // relaxation fixed point and shifts four extra hot bytes.
+        db      $3E, $3E, $3E
+        {$else}
+        db      $3E, $3E, $3E
+        {$endif MSWINDOWS}
         and     rcx, DropMediumAndLargeFlagsMask
         add     rbx, rcx
         // Was the block binned?
         cmp     rcx, MinimumMediumBlockSize
         jb      @NextBlockChecked
+        {$ifdef LINUX}
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         mov     rcx, rax
         call    RemoveMediumFreeBlock // rcx = APMediumFreeBlock
         jmp     @NextBlockChecked
@@ -4111,8 +4200,12 @@ asm     // P = rcx on Windows, P = rdi on SystemV
         // Store the previous first free block as the block header
         lea     r9, [rax + IsFreeBlockFlag]
         mov     [rcx - BlockHeaderSize], r9
-        // Was the pool full?
+        // Was the pool full? Keep the relink behind the Linux hot return so
+        // the usual partially-free pool falls through without a taken jump.
         test    rax, rax
+        {$ifdef LINUX}
+        jz      @SmallPoolWasFull
+        {$else}
         jnz     @SmallPoolWasNotFull
         // Insert the pool back into the linked list if it was full
         {$ifdef MSWINDOWS}
@@ -4129,6 +4222,7 @@ asm     // P = rcx on Windows, P = rdi on SystemV
         {$else}
         mov     [rsi].TSmallBlockType.NextPartiallyFreePool, rdx
         {$endif MSWINDOWS}
+        {$endif LINUX}
 @SmallPoolWasNotFull:
         // Try to release all pending bin from this block while we have the lock
         {$ifdef MSWINDOWS}
@@ -4147,7 +4241,15 @@ asm     // P = rcx on Windows, P = rdi on SystemV
         {$endif MSWINDOWS}
         {$ifdef NOSFRAME}
         ret
-@Void:  xor     eax, eax
+@Void:
+        {$ifdef LINUX}
+        // Nil is cold; these dead-side bytes place the following empty-pool
+        // work without burdening ordinary tiny/small frees.
+        db      $3E, $3E, $3E
+        mov     eax, 0
+        {$else}
+        xor     eax, eax
+        {$endif LINUX}
         ret
         {$else}
         jmp     @Done // on Win64, a stack frame is required
@@ -4155,6 +4257,93 @@ asm     // P = rcx on Windows, P = rdi on SystemV
         jmp     @Quit
         {$endif NOSFRAME}
 @PoolIsNowEmpty:
+        {$ifdef LINUX}
+        // FirstFreeBlock=nil is a one-block sequential pool. Keep tiny
+        // classes immediately and larger classes only after proven reuse.
+        test    rax, rax
+        {$ifdef FPCMM_MOONSHARD}
+        jnz     @PoolIsNowEmptyMulti
+        cmp     word ptr [rsi].TSmallBlockType.BlockSize, 256
+        jbe     @KeepSingleBlockPool
+        cmp     byte ptr [rsi].TSmallBlockType.EmptyPoolReuseScore, SmallBlockHotPoolThreshold
+        jae     @StoreFreeBlock
+        inc     byte ptr [rsi].TSmallBlockType.EmptyPoolReuseScore
+        jmp     @IsSequentialFeedPool
+@KeepSingleBlockPool:
+        mov     [rdx].TSmallBlockPoolHeader.FirstFreeBlock, rcx
+        mov     qword ptr [rcx - BlockHeaderSize], IsFreeBlockFlag
+        mov     rcx, [rsi].TSmallBlockType.NextPartiallyFreePool
+        mov     [rdx].TSmallBlockPoolHeader.PreviousPartiallyFreePool, rsi
+        db      $3E
+        mov     [rdx].TSmallBlockPoolHeader.NextPartiallyFreePool, rcx
+        db      $3E, $3E, $3E
+        mov     [rcx].TSmallBlockPoolHeader.PreviousPartiallyFreePool, rdx
+        db      $3E, $3E, $3E
+        mov     [rsi].TSmallBlockType.NextPartiallyFreePool, rdx
+        cmp     dword ptr [rsi].TSmallBlockType.LastFreeCount, 0
+        jne     @ProcessPendingBin
+        mov     byte ptr [rsi].TSmallBlockType.Locked, false
+        movzx   eax, word ptr [rsi].TSmallBlockType.BlockSize
+        ret
+        {$else}
+        jz      @IsSequentialFeedPool
+        jmp     @PoolIsNowEmptyMulti
+        {$endif FPCMM_MOONSHARD}
+@SmallPoolWasFull:
+        // Cold relinking supplies the bytes that used to sit on the common
+        // partially-free-pool path.
+        db      $3E, $3E, $3E
+        mov     rcx, [rsi].TSmallBlockType.NextPartiallyFreePool
+        db      $3E, $3E, $3E
+        mov     [rdx].TSmallBlockPoolHeader.PreviousPartiallyFreePool, rsi
+        mov     [rdx].TSmallBlockPoolHeader.NextPartiallyFreePool, rcx
+        mov     [rcx].TSmallBlockPoolHeader.PreviousPartiallyFreePool, rdx
+        mov     [rsi].TSmallBlockType.NextPartiallyFreePool, rdx
+        jmp     @SmallPoolWasNotFull
+@PoolIsNowEmptyMulti:
+        mov     rax, [rdx].TSmallBlockPoolHeader.PreviousPartiallyFreePool
+        mov     rcx, [rdx].TSmallBlockPoolHeader.NextPartiallyFreePool
+        mov     TSmallBlockPoolHeader[rax].NextPartiallyFreePool, rcx
+        mov     [rcx].TSmallBlockPoolHeader.PreviousPartiallyFreePool, rax
+        db      $3E
+        xor     eax, eax
+        cmp     [rsi].TSmallBlockType.CurrentSequentialFeedPool, rdx
+        jne     @NotSequentialFeedPool
+        {$ifdef FPCMM_MOONSHARD}
+        db      $3E, $3E, $3E
+        mov     byte ptr [rsi].TSmallBlockType.EmptyPoolReuseScore, 0
+        {$endif FPCMM_MOONSHARD}
+@IsSequentialFeedPool:
+        db      $3E, $3E, $3E
+        mov     [rsi].TSmallBlockType.MaxSequentialFeedBlockAddress, rax
+@NotSequentialFeedPool:
+        db      $3E, $3E, $3E
+        mov     byte ptr [rsi].TSmallBlockType.Locked, false
+        db      $3E, $3E, $3E
+        mov     rcx, rdx
+        db      $3E, $3E, $3E
+        mov     rdx, [rdx - BlockHeaderSize]
+        {$ifdef FPCMM_MULTIPLESMALLNOTWITHMEDIUM}
+        db      $3E, $3E, $3E
+        mov     rax, rsi
+        db      $3E, $3E, $3E
+        lea     r10, [rip + SmallBlockInfo]
+        db      $3E, $3E, $3E
+        sub     rax, r10
+        db      $3E, $3E, $3E
+        shr     eax, SmallBlockTypePO2 - 3
+        db      $3E, $3E, $3E
+        mov     r10, [r10 + rax].TSmallBlockInfo.SmallMediumBlockInfo
+        {$else}
+        lea     r10, [rip + SmallMediumBlockInfo]
+        {$endif FPCMM_MULTIPLESMALLNOTWITHMEDIUM}
+        db      $3E, $3E, $3E
+        movzx   eax, word ptr [rsi].TSmallBlockType.BlockSize
+        push    rax
+        call    FreeMediumBlock
+        pop     rax
+        ret
+        {$else}
         // FirstFreeBlock=nil means it is the sequential feed pool with a single block
         test    rax, rax
         {$ifdef FPCMM_MOONSHARD}
@@ -4247,6 +4436,7 @@ asm     // P = rcx on Windows, P = rdi on SystemV
         {$endif MSWINDOWS}
         jmp     @IsSequentialFeedPool
         {$endif FPCMM_MOONSHARD}
+        {$endif LINUX}
 @ProcessPendingBin:
         // Release the next SmallLastFree list block while we own the lock
         {$ifdef MSWINDOWS}
@@ -4261,7 +4451,13 @@ asm     // P = rcx on Windows, P = rdi on SystemV
         call    GetSmallLastFreeBlockRsi
         {$endif MSWINDOWS}
         jz      @NoBin
+        {$ifdef LINUX}
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         mov     rcx, rax
+        {$ifdef LINUX}
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         mov     rdx, [rax - BlockHeaderSize]
         // block type register, rcx=P, rdx=TSmallBlockPoolHeader
         jmp     @FreeAndUnlock // will loop until LastFreeCount=0
@@ -4270,8 +4466,17 @@ asm     // P = rcx on Windows, P = rdi on SystemV
         // P is still in rcx/rdi first param register
         {$ifdef FPCMM_MS_MEDIUM}
         jnz     @FreeLarge
+        {$ifdef LINUX}
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         mov     r10, rcx
+        {$ifdef LINUX}
+        db      $3E, $3E
+        {$endif LINUX}
         and     r10, not MediumBlockAlignmentMask
+        {$ifdef LINUX}
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         mov     r10, [r10 + TMediumBlockPoolHeader.Reserved1]
         {$ifdef NOSFRAME}
         jmp     FreeMediumBlock
@@ -4309,7 +4514,11 @@ asm     // P = rcx on Windows, P = rdi on SystemV
         shr     eax, SmallBlockTypePO2 - 3 // 1 shl 3 = SizeOf(pointer)
         lea     r10, [r10 + rax].TSmallBlockInfo.SmallLastFree
         // r10 = @SmallLastFree[] of this block type
-@Atom2: mov     eax, $100
+@Atom2:
+        {$ifdef LINUX}
+        db      $3E, $3E
+        {$endif LINUX}
+        mov     eax, $100
         {$ifdef MSWINDOWS}
   lock  cmpxchg byte ptr [rbx].TSmallBlockType.LastFreeLocked, ah
         {$else}
@@ -4365,12 +4574,16 @@ asm
         // A pending cross-thread bin needs the draining loop in the slow path.
         cmp     dword ptr [r10].TSmallBlockType.LastFreeCount, 0
         jne     @UnlockSlow
+        // Schedule existing free-list work between adjacent compare/jump
+        // pairs. This adds neither instructions nor bytes to the hot path.
+        mov     rax, [rdx].TSmallBlockPoolHeader.FirstFreeBlock
+        lea     r9, [rax + IsFreeBlockFlag]
         // Retain an already proven hot empty sequential pool here.  Cold
         // larger pools and any non-sequential empty pool still need the slow
         // retirement/scoring path before any allocator state is changed.
         cmp     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
         jne     @Release
-        cmp     qword ptr [rdx].TSmallBlockPoolHeader.FirstFreeBlock, 0
+        test    rax, rax
         jne     @UnlockSlow
         cmp     word ptr [r10].TSmallBlockType.BlockSize, 256
         jbe     @Release
@@ -4378,10 +4591,8 @@ asm
         jb      @UnlockSlow
 @Release:
         add     [r10].TSmallBlockType.FreememCount, 1
-        mov     rax, [rdx].TSmallBlockPoolHeader.FirstFreeBlock
         sub     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
         mov     [rdx].TSmallBlockPoolHeader.FirstFreeBlock, rcx
-        lea     r9, [rax + IsFreeBlockFlag]
         mov     [rcx - BlockHeaderSize], r9
         test    rax, rax
         jnz     @Unlock
@@ -4398,6 +4609,9 @@ asm
 @UnlockSlow:
         mov     byte ptr [r10].TSmallBlockType.Locked, false
         jmp     @Slow
+        // Dead byte after the jump shifts the deferred loop and slow tail
+        // away from byte 31 without executing padding on either path.
+        db      $3E
 @Deferred:
         // Preserve the existing lock-free hand-off contract for a contended
         // size class, but use only volatile Win64 registers.
@@ -4455,22 +4669,35 @@ asm
         mov     [rsp + 32], rcx // var P address
         .seh_endprologue
         {$else}
+        db      $3E, $3E, $3E
         mov     rdx, Size
         push    rbx
         push    r14
         push    P // for assignement in @Done
         {$endif MSWINDOWS}
+        {$ifdef LINUX}
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         mov     r14, qword ptr [P]
         test    rdx, rdx
         jz      @VoidSize  // ReallocMem(P,0)=FreeMem(P)
         test    r14, r14
         jz      @GetMemMoveFreeMem // ReallocMem(nil,Size)=GetMem(Size)
+        {$ifdef LINUX}
+        db      $3E, $3E
+        {$endif LINUX}
         mov     rcx, [r14 - BlockHeaderSize]
         test    cl, IsFreeBlockFlag + IsMediumBlockFlag + IsLargeBlockFlag
         jnz     @NotASmallBlock
         // -------------- TINY/SMALL block -------------
         // Get rbx=blocktype, rcx=available size, rax=inplaceresize
+        {$ifdef LINUX}
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         mov     rbx, [rcx].TSmallBlockPoolHeader.BlockType
+        {$ifdef LINUX}
+        db      $3E, $3E
+        {$endif LINUX}
         lea     rax, [rdx * 4 + SmallBlockDownsizeCheckAdder]
         movzx   ecx, [rbx].TSmallBlockType.BlockSize
         sub     ecx, BlockHeaderSize
@@ -4531,6 +4758,9 @@ asm
         jz      @Done
         test    r14, r14 // ReallocMem(nil,Size)=GetMem(Size)
         jz      @Done
+        {$ifdef LINUX}
+        db      $3E, $3E
+        {$endif LINUX}
         sub     rbx, 8
 @MoveFreeMem:
         // copy and free: rax=New r14=P rbx=size-8
@@ -4554,7 +4784,11 @@ asm
         js      @By16
 @Last8: mov     rax, qword ptr [rcx + rbx]
         mov     qword ptr [rdx + rbx], rax
-@DoFree:mov     P, r14
+@DoFree:
+        {$ifdef LINUX}
+        db      $3E
+        {$endif LINUX}
+        mov     P, r14
         call    _FreeMem
         {$ifdef MSWINDOWS}
         mov     rax, [rsp + 40]
@@ -4864,9 +5098,15 @@ asm
         .seh_endprologue
         {$else}
         push    rbx
+        // AllocMem is outside the GetMem/FreeMem hot path. Reuse the accepted
+        // Linux placement around its size setup and zero-fill decisions.
+        db      $3E, $3E, $3E
         {$endif MSWINDOWS}
         // Compute rbx = size rounded down to the last pointer
         lea     rbx, [Size - 1]
+        {$ifdef LINUX}
+        db      $3E, $3E, $3E
+        {$endif LINUX}
         and     rbx,  - 8
         // Perform the memory allocation
         call    _GetMem
@@ -4874,6 +5114,14 @@ asm
         cmp     rax, 1
         sbb     rcx, rcx
         // Point rdx to the last pointer
+        {$ifdef MSWINDOWS}
+        // These replace two bytes of the following loop alignment and move
+        // the or/je pair to the start of a 32-byte window.
+        db      $3E, $3E
+        {$endif MSWINDOWS}
+        {$ifdef LINUX}
+        db      $3E
+        {$endif LINUX}
         lea     rdx, [rax + rbx]
         // Compute Size (1..8 doesn't need to enter the SSE2 loop)
         or      rbx, rcx
