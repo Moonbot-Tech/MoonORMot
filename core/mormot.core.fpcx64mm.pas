@@ -4678,7 +4678,15 @@ asm
         {$ifdef LINUX}
         db      $3E, $3E, $3E
         {$endif LINUX}
+        {$ifdef MSWINDOWS}
+        // Entered only from the leaf _ReallocMem below, which has read P^ into
+        // r8 and, for a live block, its header into r9; the prologue leaves the
+        // volatile registers alone.  The two loads are not repeated: a chain of
+        // medium reallocations that cannot stay in place runs 2.5% faster.
+        mov     r14, r8
+        {$else}
         mov     r14, qword ptr [P]
+        {$endif MSWINDOWS}
         test    rdx, rdx
         jz      @VoidSize  // ReallocMem(P,0)=FreeMem(P)
         test    r14, r14
@@ -4686,7 +4694,12 @@ asm
         {$ifdef LINUX}
         db      $3E, $3E
         {$endif LINUX}
+        {$ifdef MSWINDOWS}
+        db      $3E // keeps the length of the load it replaces: the layout behind it stays
+        mov     rcx, r9
+        {$else}
         mov     rcx, [r14 - BlockHeaderSize]
+        {$endif MSWINDOWS}
         test    cl, IsFreeBlockFlag + IsMediumBlockFlag + IsLargeBlockFlag
         jnz     @NotASmallBlock
         // -------------- TINY/SMALL block -------------
@@ -4738,8 +4751,19 @@ asm
         cmp     rdx, P
         cmova   P, rdx
         {$ifdef MSWINDOWS}
+        // Win64 has two copies of the allocator paths: the leaf _GetMem/_FreeMem
+        // that the program calls, and the framed *Slow routines behind them.
+        // A block that is reallocated sits between the program's own GetMem
+        // and FreeMem, so calling the leaf copy here makes one set of
+        // instructions serve two live blocks of two size classes in turn, and
+        // that is measurably dearer on Zen 3: two live blocks through one copy
+        // 70 cycles, through two copies 49 (twice the 24 of one block), whatever
+        // the copy - most likely the predictor state the processor keeps per
+        // instruction address flips between the two blocks.  The framed copy
+        // does the same work from other addresses: ReallocMem(64->128) went
+        // 100 -> 80 cycles; the monolithic release, one copy for everything, 90.
         mov     [rsp + 56], rdx
-        call    _GetMem
+        call    _GetMemSlow
         mov     rdx, [rsp + 56]
         {$else}
         push    rdx
@@ -4753,7 +4777,11 @@ asm
         // reallocate copy and free: r14=P rdx=size
         mov     rbx, rdx
         mov     P, rdx // P is the proper first argument register
+        {$ifdef MSWINDOWS}
+        call    _GetMemSlow // the second copy: see @AdjustGetMemMoveFreeMem
+        {$else}
         call    _GetMem
+        {$endif MSWINDOWS}
         test    rax, rax
         jz      @Done
         test    r14, r14 // ReallocMem(nil,Size)=GetMem(Size)
@@ -4789,7 +4817,11 @@ asm
         db      $3E
         {$endif LINUX}
         mov     P, r14
+        {$ifdef MSWINDOWS}
+        call    _FreeMemSlow // the second copy: see @AdjustGetMemMoveFreeMem
+        {$else}
         call    _FreeMem
+        {$endif MSWINDOWS}
         {$ifdef MSWINDOWS}
         mov     rax, [rsp + 40]
         {$else}
@@ -5069,15 +5101,19 @@ asm
 @NotSmall:
         test    r9b, IsFreeBlockFlag + IsLargeBlockFlag
         jnz     @Slow
-        and     r9d, DropMediumAndLargeFlagsMask
-        sub     r9d, BlockHeaderSize
-        cmp     rdx, r9
+        mov     r10d, r9d // r9 stays the header for _ReallocMemSlow
+        and     r10d, DropMediumAndLargeFlagsMask
+        sub     r10d, BlockHeaderSize
+        cmp     rdx, r10
         ja      @Slow
-        lea     r10, [rdx + rdx]
-        cmp     r10, r9
+        lea     r11, [rdx + rdx]
+        cmp     r11, r10
         jb      @Slow
         mov     rax, r8
         ret
+        // Five dead bytes behind the return: the jump below would otherwise lie on
+        // bytes 91..95 and end on a 32-byte boundary (rule 4, Intel).
+        db      $0F, $1F, $44, $00, $00
 @Slow:
         jmp     _ReallocMemSlow
 end;
