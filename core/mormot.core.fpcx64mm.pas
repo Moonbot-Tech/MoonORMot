@@ -382,6 +382,12 @@ function Fpcx64mmTestSmallMediumArenaCount: integer;
 function Fpcx64mmTestSmallMediumArenaForSlot(Slot: integer): pointer;
 {$endif FPCMM_SMALLPOOL_REUSE_TEST}
 
+{$ifdef FPCMM_ERMSFILL_TEST}
+// the size from which _AllocMem zeroes with "rep stosd"; a Value above zero
+// replaces it; 0 is returned when FPCMM_ERMS is not part of the profile
+function Fpcx64mmTestErmsFillMinSize(Value: PtrUInt): PtrUInt;
+{$endif FPCMM_ERMSFILL_TEST}
+
 {$ifdef FPCMM_MEDIUMLASTFREE_TEST}
 procedure Fpcx64mmTestLockMedium(P: pointer; Locked: boolean);
 function Fpcx64mmTestMediumLastFree(P: pointer): pointer;
@@ -1199,6 +1205,14 @@ const
   // -> "movaps" loop is used up to 256 bytes of data: good on all CPUs
   // -> "movnt" Move/MoveFast is used for large blocks: always faster than ERMS
   ErmsMinSize = 256;
+  // Measured (doc/MEMORY_MANAGER.md, "Zeroing and copying"): the start-up of
+  // "rep movsb" pays off from about 1 KB on both Zen 3 and Cascade Lake; below
+  // that a loop of two 16-byte "movaps" pairs per turn copies 16 bytes a cycle
+  ErmsMoveMinSize = 1024;
+  // "rep stosd" of _AllocMem: about 80 cycles to start on Zen 3 (it pays off
+  // from 2 KB), about 25 on Cascade Lake (from 768 bytes)
+  ErmsFillMinSizeDefault = 768;
+  ErmsFillMinSizeAmd = 2048;
   {$endif FPCMM_ERMS}
 
   // some binary-level constants for internal flags
@@ -4829,12 +4843,30 @@ asm
         {$endif MSWINDOWS}
         jmp     @Done
         {$ifdef FPCMM_ERMS}
-@erms:  cld
+        // 256 bytes and more: "rep movsb" from ErmsMoveMinSize on, below it the
+        // loop of two 16-byte copies per turn at @Move32
+@erms:
+        cmp     rbx, ErmsMoveMinSize - 8
+        jb      @Move32
+        cld
+        {$ifdef LINUX} // layout: the jump behind the copy stays off the 32-byte boundary
+        db      $3E
+        {$endif LINUX}
         mov     rsi, r14
         mov     rdi, rax
         lea     rcx, [rbx + 8]
         rep movsb
         jmp     @DoFree
+        {$ifdef MSWINDOWS} // dead bytes: the code behind keeps its place on the 32-byte lines
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC, $CC
+        {$endif MSWINDOWS}
+        {$ifdef LINUX} // dead bytes: the code behind keeps its place on the 32-byte lines
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC
+        {$endif LINUX}
         {$endif FPCMM_ERMS}
 @NotASmallBlock:
         // Is this a medium block or a large block?
@@ -5070,7 +5102,50 @@ asm
         mov     qword ptr [rcx], rax // store new pointer in var P
 @Quit:  pop     r14
         pop     rbx
+        {$ifdef FPCMM_ERMS}
+        {$ifdef NOSFRAME}
+        ret
+        {$else}
+        jmp     @End // to the epilogue of the compiler
+        {$endif NOSFRAME}
+        {$endif FPCMM_ERMS}
         {$endif MSWINDOWS}
+        {$ifdef FPCMM_ERMS}
+        // rbx = size - 8 (248 .. ErmsMoveMinSize-9), r14 = old block, rax = new
+        // block, both on 16-byte boundaries.  The copies are the ones of @By16,
+        // two per turn; @Last8 then finds rbx as @By16 leaves it.
+        {$ifdef MSWINDOWS} // dead bytes: the loop below starts a 32-byte line with no padding to execute
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        {$endif MSWINDOWS}
+        {$ifdef LINUX} // dead bytes: the loop below starts a 32-byte line with no padding to execute
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC, $CC, $CC, $CC, $CC
+        {$endif LINUX}
+@Move32:
+        lea     rcx, [r14 + rbx]
+        lea     rdx, [rax + rbx]
+        neg     rbx
+        add     rbx, 32
+        align   32
+@By32:  movaps  xmm0, oword ptr [rcx + rbx - 32]
+        movaps  xmm1, oword ptr [rcx + rbx - 16]
+        movaps  oword ptr [rdx + rbx - 32], xmm0
+        movaps  oword ptr [rdx + rbx - 16], xmm1
+        add     rbx, 32
+        js      @By32
+        // one or two 16-byte copies of the sequence are left: the next one, and
+        // the last one (the same copy again if only one was left)
+        movaps  xmm0, oword ptr [rcx + rbx - 32]
+        movaps  oword ptr [rdx + rbx - 32], xmm0
+        and     ebx, 15
+        movaps  xmm1, oword ptr [rcx + rbx - 16]
+        movaps  oword ptr [rdx + rbx - 16], xmm1
+        jmp     @Last8
+@End:
+        {$endif FPCMM_ERMS}
 end;
 
 {$ifdef MSWINDOWS}
@@ -5119,6 +5194,13 @@ asm
 end;
 
 {$endif MSWINDOWS}
+
+{$ifdef FPCMM_ERMS}
+var
+  // _AllocMem zeroes blocks of this size and more with "rep stosd", smaller ones
+  // with SSE2 loops; InitializeMemoryManager raises it on AMD processors
+  ErmsFillMinSize: PtrUInt = ErmsFillMinSizeDefault;
+{$endif FPCMM_ERMS}
 
 function _AllocMem(Size: PtrUInt): pointer;
   {$ifdef MSWINDOWS} nostackframe; {$else}
@@ -5186,8 +5268,18 @@ asm
         {$else}
         jmp     @Done // on Win64, a stack frame is required
         {$endif NOSFRAME}
-        // ERMS has a startup cost, but "rep stosd" is fast enough on all CPUs
-@erms:  mov     rcx, rbx
+        // 256 bytes and more: "rep stosd" from ErmsFillMinSize on, below it the
+        // loop of two 16-byte stores per turn at @Fill32 (16 bytes a cycle with
+        // no start-up; "rep stosd" starts in about 80 cycles on Zen 3 and in
+        // about 25 on Cascade Lake, and is slower on every second 16-byte
+        // alignment of the block)
+@erms:
+        cmp     rbx, qword ptr [rip + ErmsFillMinSize]
+        jb      @Fill32
+        {$ifdef MSWINDOWS} // layout: the return below lands on byte 0 of a 32-byte line
+        db      $3E
+        {$endif MSWINDOWS}
+        mov     rcx, rbx
         {$ifdef MSWINDOWS}
         mov     [rsp + 32], rax
         {$else}
@@ -5215,6 +5307,44 @@ asm
         {$else}
         pop     rbx
         {$endif MSWINDOWS}
+        {$ifdef FPCMM_ERMS}
+        {$ifndef MSWINDOWS}
+        {$ifdef NOSFRAME}
+        ret
+        {$else}
+        jmp     @End // to the epilogue of the compiler
+        {$endif NOSFRAME}
+        {$endif MSWINDOWS}
+        // rbx = offset of the last pointer (256 .. ErmsFillMinSize-1, a multiple
+        // of 8), rdx = its address, rax = the block on a 16-byte boundary.
+        // The stores are the ones of @FillLoop, two per turn.
+        {$ifdef MSWINDOWS} // dead bytes: the loop below starts a 32-byte line with no padding to execute
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC, $CC, $CC
+        {$endif MSWINDOWS}
+        {$ifdef LINUX} // dead bytes: the loop below starts a 32-byte line with no padding to execute
+        db      $CC, $CC
+        {$endif LINUX}
+@Fill32:
+        neg     rbx
+        pxor    xmm0, xmm0
+        add     rbx, 32
+        align   32
+@Fill32Loop:
+        movaps  oword ptr [rdx + rbx - 32], xmm0
+        movaps  oword ptr [rdx + rbx - 16], xmm0
+        add     rbx, 32
+        js      @Fill32Loop
+        // one or two 16-byte stores of the sequence are left: the next one, and
+        // the last one, which ends on the last pointer or 8 bytes behind it
+        // (the same store again if only one was left)
+        movaps  oword ptr [rdx + rbx - 32], xmm0
+        and     ebx, 8
+        movaps  oword ptr [rdx + rbx - 16], xmm0
+        jmp     @LastQ
+@End:
+        {$endif FPCMM_ERMS}
 end;
 
 function _MemSize(P: pointer): PtrUInt;
@@ -5973,6 +6103,25 @@ end;
 
 { ********* Initialization and Finalization }
 
+{$ifdef FPCMM_ERMS}
+// true on an "AuthenticAMD" processor; cpuid is part of every x86-64
+function CpuIsAmd: boolean; nostackframe; assembler;
+asm
+        mov     r8, rbx // cpuid overwrites this non-volatile register
+        xor     eax, eax
+        cpuid
+        xor     eax, eax
+        cmp     ebx, $68747541 // Auth
+        jne     @no
+        cmp     edx, $69746E65 // enti
+        jne     @no
+        cmp     ecx, $444D4163 // cAMD
+        jne     @no
+        mov     al, 1
+@no:    mov     rbx, r8
+end;
+{$endif FPCMM_ERMS}
+
 procedure InitializeMediumPool(var Info: TMediumBlockInfo);
 var
   i: PtrInt;
@@ -5999,6 +6148,10 @@ var
   small: PSmallBlockType;
   a, i, min, poolsize, num, perpool, size, start, next: PtrInt;
 begin
+  {$ifdef FPCMM_ERMS}
+  if CpuIsAmd then
+    ErmsFillMinSize := ErmsFillMinSizeAmd;
+  {$endif FPCMM_ERMS}
   {$ifdef FPCMM_MS_MEDIUM}
   MediumBlockInfoLookup[0] := @MediumBlockInfo;
   for i := 1 to high(MediumBlockInfoLookup) do
@@ -6430,6 +6583,19 @@ begin
   {$endif FPCMM_MULTIPLESMALLNOTWITHMEDIUM}
 end;
 {$endif FPCMM_SMALLPOOL_REUSE_TEST}
+
+{$ifdef FPCMM_ERMSFILL_TEST}
+function Fpcx64mmTestErmsFillMinSize(Value: PtrUInt): PtrUInt;
+begin
+  {$ifdef FPCMM_ERMS}
+  result := ErmsFillMinSize;
+  if Value <> 0 then
+    ErmsFillMinSize := Value;
+  {$else}
+  result := 0;
+  {$endif FPCMM_ERMS}
+end;
+{$endif FPCMM_ERMSFILL_TEST}
 
 {$ifdef FPCMM_MEDIUMLASTFREE_TEST}
 function TestMediumInfo(P: pointer): PMediumBlockInfo;
