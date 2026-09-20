@@ -55,3 +55,16 @@ The transferred source passed MoonCompiler's addressed failure, ownership,
 unwind, 21-profile and linked-layout checks on its supported targets. Fault hooks
 were confined to test copies. These checks do not claim a new whole-product
 qualification or qualify unrelated mORMot/Delphi code.
+
+## Reason-preserving small-pool handoff
+
+The Windows leaf transfers an already locked, empty pool to the cold retirement
+path. Pending frees retain their original slow-path reason. This removes a
+repeated unlock/decode/lock sequence without adding pool retention or changing
+the medium-allocation policy. Linux is unchanged.
+
+Temporary pairs benefit; under contention, earlier retirement can move another
+worker to a different pool and increase latency. Matched-owner and forced-pending
+tests cover that boundary. The existing deferred-free backlog is not repaired by
+this change, and idle time alone is not a completion guarantee. The single-block
+retention bound applies per arena/class, not to the entire process's memory.

@@ -4587,8 +4587,8 @@ asm     // P = rcx on Windows, P = rdi on SystemV
 @EmptySequentialFeedPool:
         // Keep one empty pool after repeated single-block churn. Tiny classes
         // retain it immediately; larger small classes first prove reuse.
-        // Those larger classes are global, not per-thread/per-arena: retaining
-        // every one is bounded to about 1.2 MiB with the current pool table.
+        // MOONSHARD also shards larger classes: each (arena, class) slot may
+        // retain one single-block pool, not one pool globally per class.
         {$ifdef MSWINDOWS}
         cmp     word ptr [rbx].TSmallBlockType.BlockSize, 256
         jbe     @StoreFreeBlock
@@ -4718,10 +4718,13 @@ asm     // P = rcx on Windows, P = rdi on SystemV
 end;
 
 {$ifdef MSWINDOWS}
+// Private continuation: RCX = P, RDX = pool, R10 = locked class.
+// The leaf has proved BlocksInUse = 1 and ruled out retained single-block pools.
+function FreeSmallPoolLockedHandoff(P, Pool: pointer): PtrUInt; forward;
 
 // The usual small-block release needs neither a call nor a non-volatile
-// register.  Empty-pool retirement and all medium/large work stay in the
-// fully framed implementation below this leaf front-end.
+// register. Empty-pool retirement and medium/large work use ABI-framed
+// cold continuations.
 function _FreeMem(P: pointer): PtrUInt; nostackframe; assembler;
 asm
         {$if defined(FPCMM_ASSUMEMULTITHREAD) and
@@ -4752,11 +4755,11 @@ asm
         cmp     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
         jne     @Release
         test    rax, rax
-        jne     @UnlockSlow
+        jne     @EmptyPoolHandoff
         cmp     word ptr [r10].TSmallBlockType.BlockSize, 256
         jbe     @Release
         cmp     byte ptr [r10].TSmallBlockType.EmptyPoolReuseScore, SmallBlockHotPoolThreshold
-        jb      @UnlockSlow
+        jb      @EmptyPoolHandoff
 @Release:
         add     [r10].TSmallBlockType.FreememCount, 1
         sub     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
@@ -4777,9 +4780,12 @@ asm
 @UnlockSlow:
         mov     byte ptr [r10].TSmallBlockType.Locked, false
         jmp     @Slow
-        // Dead byte after the jump shifts the deferred loop and slow tail
-        // away from byte 31 without executing padding on either path.
-        db      $3E
+@EmptyPoolHandoff:
+        // Private continuation receives the class in r10 unchanged.
+        jmp     FreeSmallPoolLockedHandoff
+        // Unreachable bytes put the existing deferred cmpxchg/jcc back
+        // within a fetch line; no hot instruction or prefix is added.
+        db      $CC,$CC,$CC,$CC,$CC,$CC,$CC,$CC,$CC,$CC,$CC,$CC
 @Deferred:
         // Preserve the existing lock-free hand-off contract for a contended
         // size class, but use only volatile Win64 registers.
@@ -7034,6 +7040,65 @@ begin
 end;
 
 {$I+}
+
+{$ifdef MSWINDOWS}
+function FreeSmallPoolLockedHandoff(P, Pool: pointer): PtrUInt; nostackframe; assembler;
+asm
+        sub     rsp, 40
+        .seh_stackalloc 40
+        .seh_endprologue
+        cmp     dword ptr [r10].TSmallBlockType.LastFreeCount, 0
+        jne     @Pending
+        add     [r10].TSmallBlockType.FreememCount, 1
+        mov     rax, [rdx].TSmallBlockPoolHeader.FirstFreeBlock
+        sub     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
+        test    rax, rax
+        jz      @SingleBlock
+        mov     rax, [rdx].TSmallBlockPoolHeader.PreviousPartiallyFreePool
+        mov     rcx, [rdx].TSmallBlockPoolHeader.NextPartiallyFreePool
+        mov     TSmallBlockPoolHeader[rax].NextPartiallyFreePool, rcx
+        mov     [rcx].TSmallBlockPoolHeader.PreviousPartiallyFreePool, rax
+        xor     eax, eax
+        cmp     [r10].TSmallBlockType.CurrentSequentialFeedPool, rdx
+        jne     @Release
+        {$ifdef FPCMM_MOONSHARD}
+        mov     byte ptr [r10].TSmallBlockType.EmptyPoolReuseScore, al
+        {$endif}
+        jmp     @ClearSequential
+@SingleBlock:
+        {$ifdef FPCMM_MOONSHARD}
+        inc     byte ptr [r10].TSmallBlockType.EmptyPoolReuseScore
+        {$endif}
+        xor     eax, eax
+@ClearSequential:
+        mov     [r10].TSmallBlockType.MaxSequentialFeedBlockAddress, rax
+@Release:
+        movzx   eax, word ptr [r10].TSmallBlockType.BlockSize
+        mov     [rsp + 32], rax
+        mov     byte ptr [r10].TSmallBlockType.Locked, false
+        mov     rcx, rdx
+        db      $3E
+        mov     rdx, [rdx - BlockHeaderSize]
+        {$ifdef FPCMM_MULTIPLESMALLNOTWITHMEDIUM}
+        mov     rax, r10
+        lea     r10, [rip + SmallBlockInfo]
+        sub     rax, r10
+        shr     eax, SmallBlockTypePO2 - 3
+        mov     r10, [r10 + rax].TSmallBlockInfo.SmallMediumBlockInfo
+        {$else}
+        lea     r10, [rip + SmallMediumBlockInfo]
+        {$endif FPCMM_MULTIPLESMALLNOTWITHMEDIUM}
+        call    FreeMediumBlock
+        mov     eax, [rsp + 32]
+        add     rsp, 40
+        ret
+@Pending:
+        mov     byte ptr [r10].TSmallBlockType.Locked, false
+        add     rsp, 40
+        jmp     _FreeMemSlow
+end;
+
+{$endif MSWINDOWS}
 
 {$ifndef FPCMM_STANDALONE}
 
