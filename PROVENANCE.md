@@ -41,3 +41,17 @@ When any static binary is replaced, the same commit must identify its source rev
 - Product integration is additionally exercised by Moonbot and its Linux service builds.
 
 A green focused suite proves only its stated boundary. It does not turn this pinned product derivative into a drop-in replacement for every later upstream mORMot release.
+
+## Allocation failure and unwind
+
+The bundled allocator and this copy share the same cold failure paths. Failed
+allocation raises the runtime out-of-memory error; failed realloc preserves the
+old pointer, contents and allocator ownership. A failed Windows commit releases
+the unsuccessful reservation. Linux manual frames carry matching unwind metadata.
+Ordinary leaf instructions are unchanged; cold refill/large checks and unwind
+metadata have an explicit cost.
+
+The transferred source passed MoonCompiler's addressed failure, ownership,
+unwind, 21-profile and linked-layout checks on its supported targets. Fault hooks
+were confined to test copies. These checks do not claim a new whole-product
+qualification or qualify unrelated mORMot/Delphi code.

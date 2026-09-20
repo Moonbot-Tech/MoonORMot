@@ -716,18 +716,26 @@ begin
     if (VirtualQuery(next, @nfo, SizeOf(nfo)) = SizeOf(nfo)) and
        (nfo.State = MEM_FREE) and
        (nfo.BaseAddress <= PtrUInt(next)) and // enough space?
-       (nfo.BaseAddress + nfo.RegionSize >= PtrUInt(next) + nextsize) and
-       // set the address space in two reserve + commit steps for thread safety
-       (VirtualAlloc(next, nextsize, MEM_RESERVE, PAGE_READWRITE) <> nil) and
-       (VirtualAlloc(next, nextsize, MEM_COMMIT, PAGE_READWRITE) <> nil) then
+       (nfo.BaseAddress + nfo.RegionSize >= PtrUInt(next) + nextsize) then
       begin
-        new_len := new_len or LargeBlockIsSegmented; // several VirtualFree()
-        result := addr; // in-place realloc: no need to move memory :)
-        exit;
+        // Set the address space in two reserve + commit steps for thread
+        // safety. A failed commit must release the reservation again.
+        result := VirtualAlloc(next, nextsize, MEM_RESERVE, PAGE_READWRITE);
+        if result <> nil then
+          if VirtualAlloc(next, nextsize, MEM_COMMIT, PAGE_READWRITE) <> nil then
+          begin
+            new_len := new_len or LargeBlockIsSegmented; // several VirtualFree()
+            result := addr; // in-place realloc: no need to move memory :)
+            exit;
+          end
+          else
+            VirtualFree(result, 0, MEM_RELEASE);
       end;
   end;
   // we need to use the slower but safe Alloc/Move/Free pattern
   result := OsAllocLarge(new_len);
+  if result = nil then
+    exit;
   tomove := new_len;
   if tomove > old_len then // handle size up or down
     tomove := old_len;
@@ -947,6 +955,8 @@ end;
 function OsRemapLarge(addr: pointer; old_len, new_len: size_t): pointer;
 begin
   result := OsAllocLarge(new_len);
+  if result = nil then
+    exit;
   if new_len > old_len then
     new_len := old_len; // resize down
   Move(addr^, result^, new_len); // RTL non-volatile asm or our AVX MoveFast()
@@ -2931,6 +2941,13 @@ end;
 
 function ComputeLargeBlockSize(size: PtrUInt): PtrUInt; inline;
 begin
+  // Refuse a request whose header and rounding would wrap to a small mapping.
+  {$ifdef FPCMM_LARGEBIGALIGN}
+  if size > High(PtrUInt) - PtrUInt(LargeBlockHeaderSize + BlockHeaderSize + LargeBlockGranularity2And) then
+  {$else}
+  if size > High(PtrUInt) - PtrUInt(LargeBlockHeaderSize + BlockHeaderSize + LargeBlockGranularityAnd) then
+  {$endif FPCMM_LARGEBIGALIGN}
+    exit(0);
   inc(size, LargeBlockHeaderSize + BlockHeaderSize);
   // aligned_size := ((size + align - 1) AND (NOT (align - 1)))
   {$ifdef FPCMM_LARGEBIGALIGN}
@@ -2943,6 +2960,30 @@ begin
     result := (size + LargeBlockGranularityAnd) and not LargeBlockGranularityAnd;
 end;
 
+procedure FpcHandleError(Errno: LongInt);
+  external name 'FPC_HANDLEERROR';
+
+function AllocationFailed: pointer; noinline;
+begin
+  if not ReturnNilIfGrowHeapFails then
+    FpcHandleError(203);
+  result := nil;
+end;
+
+{$ifdef MSWINDOWS}
+// This entry owns only the medium lock; the small-pool caller uses the raw helper.
+function AllocNewMediumPoolOrFail(BlockSize: cardinal; var Info: TMediumBlockInfo): pointer;
+begin
+  result := AllocNewSequentialFeedMediumPool(BlockSize, Info);
+  if result <> nil then
+    exit;
+  if ReturnNilIfGrowHeapFails then
+    exit;
+  Info.Locked := false;
+  FpcHandleError(203); // does not return; nil returns leave the unlock to caller
+end;
+{$endif MSWINDOWS}
+
 function AllocateLargeBlockFrom(existing: pointer;
   oldblocksize, newblocksize: PtrUInt): pointer;
 var
@@ -2953,45 +2994,54 @@ begin
   else
     new := OsRemapLarge(existing, oldblocksize, newblocksize);
     // note: on Windows, newblocksize may now include LargeBlockIsSegmented flag
-  if new <> nil then
+  if new = nil then
   begin
-    NotifyArenaAlloc(HeapStatus.Large, DropMediumAndLargeFlagsMask and newblocksize);
-    if existing <> nil then
-      NotifyMediumLargeFree(HeapStatus.Large, oldblocksize);
-    new.BlockSizeAndFlags := newblocksize or IsLargeBlockFlag;
-    LockLargeBlocks;
-    {$ifdef FPCX64MM_DIAGNOSTIC_ACTIVE}
-    if not DiagLargeNodeLinkedLocked(@LargeBlocksCircularList) then
-    begin
-      LargeBlocksLocked := false;
-      DiagRaiseIfFailed;
+    if existing = nil then
+      result := AllocationFailed
+    else
       result := nil;
-      exit;
-    end;
-    {$endif FPCX64MM_DIAGNOSTIC_ACTIVE}
-    old := LargeBlocksCircularList.NextLargeBlockHeader;
-    new.PreviousLargeBlockHeader := @LargeBlocksCircularList;
-    LargeBlocksCircularList.NextLargeBlockHeader := new;
-    new.NextLargeBlockHeader := old;
-    old.PreviousLargeBlockHeader := new;
-    {$ifdef FPCX64MM_DIAGNOSTIC_ACTIVE}
-    if not DiagLargeNodeLinkedLocked(new) then
-    begin
-      LargeBlocksLocked := false;
-      DiagRaiseIfFailed;
-      result := nil;
-      exit;
-    end;
-    {$endif FPCX64MM_DIAGNOSTIC_ACTIVE}
-    LargeBlocksLocked := false;
-    inc(new);
+    exit;
   end;
+  NotifyArenaAlloc(HeapStatus.Large, DropMediumAndLargeFlagsMask and newblocksize);
+  if existing <> nil then
+    NotifyMediumLargeFree(HeapStatus.Large, oldblocksize);
+  new.BlockSizeAndFlags := newblocksize or IsLargeBlockFlag;
+  LockLargeBlocks;
+  {$ifdef FPCX64MM_DIAGNOSTIC_ACTIVE}
+  if not DiagLargeNodeLinkedLocked(@LargeBlocksCircularList) then
+  begin
+    LargeBlocksLocked := false;
+    DiagRaiseIfFailed;
+    result := nil;
+    exit;
+  end;
+  {$endif FPCX64MM_DIAGNOSTIC_ACTIVE}
+  old := LargeBlocksCircularList.NextLargeBlockHeader;
+  new.PreviousLargeBlockHeader := @LargeBlocksCircularList;
+  LargeBlocksCircularList.NextLargeBlockHeader := new;
+  new.NextLargeBlockHeader := old;
+  old.PreviousLargeBlockHeader := new;
+  {$ifdef FPCX64MM_DIAGNOSTIC_ACTIVE}
+  if not DiagLargeNodeLinkedLocked(new) then
+  begin
+    LargeBlocksLocked := false;
+    DiagRaiseIfFailed;
+    result := nil;
+    exit;
+  end;
+  {$endif FPCX64MM_DIAGNOSTIC_ACTIVE}
+  LargeBlocksLocked := false;
+  inc(new);
   result := new;
 end;
 
 function AllocateLargeBlock(size: PtrUInt): pointer;
 begin
-  result := AllocateLargeBlockFrom(nil, 0, ComputeLargeBlockSize(size));
+  size := ComputeLargeBlockSize(size);
+  if size = 0 then
+    result := AllocationFailed
+  else
+    result := AllocateLargeBlockFrom(nil, 0, size);
 end;
 
 procedure FreeLarge(ptr: PLargeBlockHeader; size: PtrUInt);
@@ -3064,14 +3114,17 @@ begin
   begin
     // size was reduced to a small/medium block: use GetMem/Move/FreeMem
     result := _GetMem(new);
-    if result <> nil then
-      Move(p^, result^, oldavail); // RTL non-volatile asm or our AVX MoveFast()
+    if result = nil then
+      exit;
+    Move(p^, result^, oldavail); // RTL non-volatile asm or our AVX MoveFast()
     _FreeMem(p);
   end
   else
   begin
     old := DropMediumAndLargeFlagsMask and header^.BlockSizeAndFlags;
     size := ComputeLargeBlockSize(new);
+    if size = 0 then
+      exit(AllocationFailed);
     if size = old then
       // no need to realloc anything (paranoid check: should be handled above)
       result := p
@@ -3097,6 +3150,19 @@ begin
       // on Windows, try to reserve the memory block just after the existing
       // otherwise, use Alloc/Move/Free pattern, with asm/AVX move
       result := AllocateLargeBlockFrom(header, old, size);
+      if result = nil then
+      begin
+        // A failed remap leaves the old mapping alive. Put it back into the
+        // large list before returning nil or raising EOutOfMemory.
+        LockLargeBlocks;
+        next := LargeBlocksCircularList.NextLargeBlockHeader;
+        header^.PreviousLargeBlockHeader := @LargeBlocksCircularList;
+        header^.NextLargeBlockHeader := next;
+        LargeBlocksCircularList.NextLargeBlockHeader := header;
+        next^.PreviousLargeBlockHeader := header;
+        LargeBlocksLocked := false;
+        result := AllocationFailed;
+      end;
     end;
   end;
 end;
@@ -3513,6 +3579,10 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         {$ifndef MSWINDOWS}
         push    rbx
         {$endif MSWINDOWS}
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_offset rbx, -16
+        {$endif LINUX}
         mov     rbx, rsi
         // Are there any available blocks of a suitable size?
         movsx   esi, [rbx].TSmallBlockType.AllowedGroupsForBlockPoolBitmap
@@ -3601,24 +3671,49 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         {$else}
         movzx   edi, word ptr [rbx].TSmallBlockType.OptimalBlockPoolSize
         push    rdi
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 24
+        {$endif LINUX}
         push    rsi
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 32
+        {$endif LINUX}
         // on input: edi=BlockSize, rsi=Info
         call    AllocNewSequentialFeedMediumPool
         pop     r10
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 24
+        {$endif LINUX}
         pop     rdi  // restore edi=blocksize and r10=TMediumBlockInfo
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        {$endif LINUX}
         {$endif MSWINDOWS}
         mov     rsi, rax
         test    rax, rax
         jnz     @GotMediumBlock // rsi=freeblock rbx=blocktype edi=blocksize
         mov     [r10 + TMediumBlockInfo.Locked], al
         mov     [rbx].TSmallBlockType.Locked, al
+        {$ifdef MSWINDOWS}
+        jmp     @AllocationFailure
+        {$else}
+        call    AllocationFailed
         {$ifdef NOSFRAME}
         pop     rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         ret
         {$else}
-        jmp     @Done // on Win64, a stack frame is required
+        jmp     @Done
         {$endif NOSFRAME}
+        {$endif MSWINDOWS}
 @UseWholeBlock:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_offset rbx, -16
+        {$endif LINUX}
         // rsi = free block, rbx = block type, edi = block size
         // Mark this block as used in the block following it
         and     byte ptr [rsi + rdi - BlockHeaderSize],  NOT PreviousMediumBlockIsFreeFlag
@@ -3647,16 +3742,28 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         mov     [rax - BlockHeaderSize], rsi
         {$ifdef NOSFRAME}
         pop     rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         ret
         {$else}
         jmp     @Done // on Win64, a stack frame is required
         {$endif NOSFRAME}
         // ---------- MEDIUM block allocation ----------
 @NotTinySmallBlock:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         // from now on, we may use the rbx register
         {$ifndef MSWINDOWS}
         push    rbx
         {$endif MSWINDOWS}
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_offset rbx, -16
+        {$endif LINUX}
         // Do we need a Large block?
         lea     r10, [rip + MediumBlockInfo]
         {$ifdef FPCMM_MS_MEDIUM}
@@ -3760,11 +3867,19 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         mov     byte ptr [r10 + TMediumBlockInfo.Locked], false
         {$ifdef NOSFRAME}
         pop     rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         ret
         {$else}
         jmp     @Done // on Win64, a stack frame is required
         {$endif NOSFRAME}
 @AllocateNewSequentialFeedForMedium:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_offset rbx, -16
+        {$endif LINUX}
         {$ifdef MSWINDOWS}
         mov     ecx, ebx
         {$ifdef FPCMM_MS_MEDIUM}
@@ -3783,19 +3898,37 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         {$endif FPCMM_MS_MEDIUM}
         {$endif MSWINDOWS}
         // on input: ecx/edi=BlockSize, rdx/rsi=Info
+        {$ifdef MSWINDOWS}
+        call    AllocNewMediumPoolOrFail
+        {$else}
         call    AllocNewSequentialFeedMediumPool
+        {$endif MSWINDOWS}
         {$ifdef FPCMM_MS_MEDIUM}
         mov     byte ptr [rbx + TMediumBlockInfo.Locked], false
         {$else}
         mov     byte ptr [rip + MediumBlockInfo.Locked], false
         {$endif FPCMM_MS_MEDIUM}
+        {$ifndef MSWINDOWS}
+        test    rax, rax
+        jnz     @NewMediumPoolDone
+        call    AllocationFailed
+@NewMediumPoolDone:
+        {$endif MSWINDOWS}
         {$ifdef NOSFRAME}
         pop     rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         ret
         {$else}
         jmp     @Done // on Win64, a stack frame is required
         {$endif NOSFRAME}
 @GotBinAndGroup:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_offset rbx, -16
+        {$endif LINUX}
         // ebx = block size, ecx = bin number, edx = group number
         // Compute rdi = @bin, rsi = free block
         lea     rax, [rcx + rcx]
@@ -3846,15 +3979,25 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         mov     rax, rsi
         {$ifdef NOSFRAME}
         pop     rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         ret
         {$else}
         jmp     @Done // on Win64, a stack frame is required
         {$endif NOSFRAME}
         // ---------- LARGE block allocation ----------
+        {$ifdef MSWINDOWS}
+        // Keep the common epilogue at its original address after removing the
+        // obsolete signed-negative nil path. No branch enters these bytes.
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        {$endif MSWINDOWS}
 @IsALargeBlockRequest:
-        xor     rax, rax
-        test    size, size
-        js      @Done
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_offset rbx, -16
+        {$endif LINUX}
         // Note: size is still in the rcx/rdi first param register
         call    AllocateLargeBlock
 @Done:  // restore registers and the stack frame before ret
@@ -3864,8 +4007,19 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         pop     rdi
         pop     rsi
         ret
+@AllocationFailure:
+        // Both allocator locks are released. Leave our frame before raising.
+        add     rsp, 32
+        pop     rbx
+        pop     rdi
+        pop     rsi
+        jmp     AllocationFailed
         {$else}
         pop     rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
 @Quit:
         {$endif MSWINDOWS}
 end;
@@ -4686,8 +4840,19 @@ asm
         db      $3E, $3E, $3E
         mov     rdx, Size
         push    rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_offset rbx, -16
+        {$endif LINUX}
         push    r14
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 24
+        .cfi_offset r14, -24
+        {$endif LINUX}
         push    P // for assignement in @Done
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 32
+        {$endif LINUX}
         {$endif MSWINDOWS}
         {$ifdef LINUX}
         db      $3E, $3E, $3E
@@ -4738,22 +4903,46 @@ asm
         mov     rax, r14 // keep original pointer
         {$ifndef MSWINDOWS}
         pop     rcx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 24
+        {$endif LINUX}
         {$endif MSWINDOWS}
         {$ifdef NOSFRAME}
         pop     r14
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_restore r14
+        {$endif LINUX}
         pop     rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         ret
         {$else}
         jmp     @Quit // on Win64, a stack frame is required
         {$endif NOSFRAME}
 @VoidSize:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 32
+        .cfi_offset rbx, -16
+        .cfi_offset r14, -24
+        {$endif LINUX}
         {$ifdef MSWINDOWS}
         mov     [rsp + 40], rdx // rdx=0 -> result=nil after _FreeMem
         {$else}
         push    rdx           // to set P=nil
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 40
+        {$endif LINUX}
         {$endif MSWINDOWS}
         jmp     @DoFree // ReallocMem(P,0)=FreeMem(P)
 @SmallUpsize:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 32
+        .cfi_offset rbx, -16
+        .cfi_offset r14, -24
+        {$endif LINUX}
         // State: r14=pointer, rdx=NewSize, rcx=CurrentBlockSize, rbx=CurrentBlockType
         // Small blocks always grow with at least 100% + SmallBlockUpsizeAdder bytes
         lea     P, qword ptr [rcx * 2 + SmallBlockUpsizeAdder]
@@ -4780,12 +4969,11 @@ asm
         call    _GetMemSlow
         mov     rdx, [rsp + 56]
         {$else}
-        push    rdx
+        // RDX is dead on both successors; keeping it would misalign this call.
         call    _GetMem
-        pop     rdx
         {$endif MSWINDOWS}
         test    rax, rax
-        jz      @Done
+        jz      @Failed
         jmp     @MoveFreeMem // rax=New r14=P rbx=size-8
 @GetMemMoveFreeMem:
         // reallocate copy and free: r14=P rdx=size
@@ -4797,7 +4985,7 @@ asm
         call    _GetMem
         {$endif MSWINDOWS}
         test    rax, rax
-        jz      @Done
+        jz      @Failed
         test    r14, r14 // ReallocMem(nil,Size)=GetMem(Size)
         jz      @Done
         {$ifdef LINUX}
@@ -4810,6 +4998,9 @@ asm
         mov     [rsp + 40], rax
         {$else}
         push    rax
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 40
+        {$endif LINUX}
         {$endif MSWINDOWS}
         {$ifdef FPCMM_ERMS}
         cmp     rbx, ErmsMinSize // startup cost of 0..255 bytes
@@ -4840,12 +5031,20 @@ asm
         mov     rax, [rsp + 40]
         {$else}
         pop     rax
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 32
+        {$endif LINUX}
         {$endif MSWINDOWS}
         jmp     @Done
         {$ifdef FPCMM_ERMS}
         // 256 bytes and more: "rep movsb" from ErmsMoveMinSize on, below it the
         // loop of two 16-byte copies per turn at @Move32
 @erms:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 40
+        .cfi_offset rbx, -16
+        .cfi_offset r14, -24
+        {$endif LINUX}
         cmp     rbx, ErmsMoveMinSize - 8
         jb      @Move32
         cld
@@ -4869,6 +5068,11 @@ asm
         {$endif LINUX}
         {$endif FPCMM_ERMS}
 @NotASmallBlock:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 32
+        .cfi_offset rbx, -16
+        .cfi_offset r14, -24
+        {$endif LINUX}
         // Is this a medium block or a large block?
         test    cl, IsFreeBlockFlag + IsLargeBlockFlag
         jnz     @PossibleLargeBlock
@@ -5018,13 +5222,26 @@ asm
         mov     rcx, [rsp + 48]
         {$else}
         push    rcx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 40
+        {$endif LINUX}
         push    rdx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 48
+        {$endif LINUX}
         mov     rcx, rdi
         call    RemoveMediumFreeBlock // rcx=APMediumFreeBlock
         pop     rdx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 40
+        {$endif LINUX}
         pop     rcx
         {$endif MSWINDOWS}
 @MediumInPlaceNoNextRemove:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 32
+        {$endif LINUX}
+
         // Medium blocks grow a minimum of 25% in in-place upsizes
         mov     eax, ecx
         shr     eax, 2
@@ -5085,9 +5302,30 @@ asm
         mov     rsi, rdx
         {$endif MSWINDOWS}
         call    ReallocateLargeBlock // with restored proper registers
+        test    rax, rax
+        jz      @Failed
         jmp     @Done
 @Error: xor     eax, eax
+@Failed:
+        {$ifdef MSWINDOWS}
+        jmp     @Quit
+        {$else}
+        pop     rcx // discard var P address without publishing nil
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 24
+        {$endif LINUX}
+        jmp     @Quit
+        {$endif MSWINDOWS}
+        {$ifdef MSWINDOWS}
+        // Unreachable: move one byte from the post-ret gap so ret avoids byte31.
+        db      $CC
+        {$endif MSWINDOWS}
 @Done:  // store rax new pointer value, and restore non-volatile registers
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 32
+        .cfi_offset rbx, -16
+        .cfi_offset r14, -24
+        {$endif LINUX}
         {$ifdef MSWINDOWS}
         mov     rcx, [rsp + 32]
         mov     qword ptr [rcx], rax
@@ -5099,9 +5337,20 @@ asm
         ret
         {$else}
         pop     rcx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 24
+        {$endif LINUX}
         mov     qword ptr [rcx], rax // store new pointer in var P
 @Quit:  pop     r14
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_restore r14
+        {$endif LINUX}
         pop     rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         {$ifdef FPCMM_ERMS}
         {$ifdef NOSFRAME}
         ret
@@ -5115,7 +5364,7 @@ asm
         // block, both on 16-byte boundaries.  The copies are the ones of @By16,
         // two per turn; @Last8 then finds rbx as @By16 leaves it.
         {$ifdef MSWINDOWS} // dead bytes: the loop below starts a 32-byte line with no padding to execute
-        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
+        db      $CC, $CC, $CC, $CC, $CC, $CC, $CC
         db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
         db      $CC, $CC, $CC, $CC, $CC, $CC, $CC, $CC
         {$endif MSWINDOWS}
@@ -5125,6 +5374,11 @@ asm
         db      $CC, $CC, $CC, $CC, $CC, $CC
         {$endif LINUX}
 @Move32:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 40
+        .cfi_offset rbx, -16
+        .cfi_offset r14, -24
+        {$endif LINUX}
         lea     rcx, [r14 + rbx]
         lea     rdx, [rax + rbx]
         neg     rbx
@@ -5145,6 +5399,11 @@ asm
         movaps  oword ptr [rdx + rbx - 16], xmm1
         jmp     @Last8
 @End:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        .cfi_restore r14
+        {$endif LINUX}
         {$endif FPCMM_ERMS}
 end;
 
@@ -5216,6 +5475,10 @@ asm
         .seh_endprologue
         {$else}
         push    rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_offset rbx, -16
+        {$endif LINUX}
         // AllocMem is outside the GetMem/FreeMem hot path. Reuse the accepted
         // Linux placement around its size setup and zero-fill decisions.
         db      $3E, $3E, $3E
@@ -5264,6 +5527,10 @@ asm
         {$ifdef FPCMM_ERMS}
         {$ifdef NOSFRAME}
         pop     rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         ret
         {$else}
         jmp     @Done // on Win64, a stack frame is required
@@ -5274,6 +5541,10 @@ asm
         // about 25 on Cascade Lake, and is slower on every second 16-byte
         // alignment of the block)
 @erms:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_offset rbx, -16
+        {$endif LINUX}
         cmp     rbx, qword ptr [rip + ErmsFillMinSize]
         jb      @Fill32
         {$ifdef MSWINDOWS} // layout: the return below lands on byte 0 of a 32-byte line
@@ -5284,6 +5555,9 @@ asm
         mov     [rsp + 32], rax
         {$else}
         push    rax
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 24
+        {$endif LINUX}
         {$endif MSWINDOWS}
         cld
         mov     rdi, rdx
@@ -5296,6 +5570,9 @@ asm
         mov     rax, [rsp + 32]
         {$else}
         pop     rax
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        {$endif LINUX}
         {$endif MSWINDOWS}
         {$endif FPCMM_ERMS}
 @Done:  // restore rbx register and the stack frame before ret
@@ -5306,6 +5583,10 @@ asm
         ret
         {$else}
         pop     rbx
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         {$endif MSWINDOWS}
         {$ifdef FPCMM_ERMS}
         {$ifndef MSWINDOWS}
@@ -5327,6 +5608,10 @@ asm
         db      $CC, $CC
         {$endif LINUX}
 @Fill32:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 16
+        .cfi_offset rbx, -16
+        {$endif LINUX}
         neg     rbx
         pxor    xmm0, xmm0
         add     rbx, 32
@@ -5344,6 +5629,10 @@ asm
         movaps  oword ptr [rdx + rbx - 16], xmm0
         jmp     @LastQ
 @End:
+        {$ifdef LINUX}
+        .cfi_def_cfa_offset 8
+        .cfi_restore rbx
+        {$endif LINUX}
         {$endif FPCMM_ERMS}
 end;
 
