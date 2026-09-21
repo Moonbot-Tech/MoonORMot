@@ -86,6 +86,7 @@ type
     fMultipartContentType: RawUtf8;
     fFilesCount: integer;
     fRfc2388NestedFiles: boolean;
+    fFlushed: boolean;
     function Add(const name, content, contenttype,
       filename, encoding: RawUtf8): PHttpMultiPartStreamSection;
   public
@@ -1945,9 +1946,17 @@ var
 begin
   if fBounds = nil then
     exit;
-  for i := length(fBounds) - 1 downto 0 do
-    mormot.core.text.Append(s, ['--', fBounds[i], '--'#13#10]);
-  Append(s);
+  if not fFlushed then
+  begin
+    // append the closing boundaries only once: Flush is called again by any
+    // Seek(0, soBeginning), e.g. from THttpClientSocket.RequestInternal after
+    // an explicit Flush, or on retry - the duplicated boundaries exceeded the
+    // Content-Length: header and broke the keep-alive connection - upstream #565
+    for i := length(fBounds) - 1 downto 0 do
+      mormot.core.text.Append(s, ['--', fBounds[i], '--'#13#10]);
+    Append(s);
+    fFlushed := true;
+  end;
   inherited Flush; // compute fSize
 end;
 

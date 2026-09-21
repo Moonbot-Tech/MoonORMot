@@ -518,6 +518,7 @@ type
     fSource: TStream; // if .zip is a file bigger than 1MB
     fSourceOffset: QWord; // where the .zip start in fSource (if appended)
     fSourceBuffer: RawByteString; // last 1MB of fSource (central dir)
+    fBufZipEnd: PByte; // end of the in-memory BufZip[] for bounds checks
     fCentralDirectoryOffset: Int64;
     fCentralDirectory: PFileHeader;
     fResource: TExecutableResource;
@@ -2539,6 +2540,7 @@ begin
   if (BufZip = nil) or
      (Size < SizeOf(TLastHeader)) then
      ESynZip.RaiseUtf8('%.Create(nil): not a zip file %', [self, fFileName]);
+  fBufZipEnd := @BufZip[Size];
   lh32 := LocateLastHeader(BufZip, Size, Offset, lh64);
   if lh32 = nil then
     ESynZip.RaiseUtf8('%.Create(%): zip trailer signature not found',
@@ -2669,6 +2671,9 @@ begin
     if e^.fileinfo.offset >= QWord(Offset) then
     begin
       // we can unzip directly from the existing memory buffer: store pointer
+      if Int64(e^.fileinfo.offset) - Offset + SizeOf(TLocalFileHeader) > Size then
+        ESynZip.RaiseUtf8('%.Create: local header of % beyond the buffer in %',
+          [self, e^.zipName, fFileName]);
       e^.local := @BufZip[Int64(e^.fileinfo.offset) - Offset];
       with e^.local^.fileInfo do
         if flags and FLAG_DATADESCRIPTOR <> 0 then
@@ -2994,6 +2999,9 @@ begin
   else
   begin
     data := e^.local^.Data;
+    if PtrUInt(data) + info.f64.zzipSize > PtrUInt(fBufZipEnd) then
+      ESynZip.RaiseUtf8('%.UnZip: data of % beyond the buffer in %',
+        [self, e^.zipName, fFileName]); // corrupted sizes/offsets
     case info.f32.zZipMethod of
       Z_STORED:
         MoveFast(data^, pointer(result)^, len);
@@ -3107,6 +3115,9 @@ begin
   begin
     // directly decompress from the .zip content memory buffer
     data := e^.local^.Data;
+    if PtrUInt(data) + aInfo.f64.zzipSize > PtrUInt(fBufZipEnd) then
+      ESynZip.RaiseUtf8('%.UnZipStream: data of % beyond the buffer in %',
+        [self, e^.zipName, fFileName]); // corrupted sizes/offsets
     case aInfo.f32.zZipMethod of
       Z_STORED:
         begin

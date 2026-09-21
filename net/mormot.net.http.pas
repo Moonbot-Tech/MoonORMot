@@ -204,6 +204,17 @@ function GetFileNameFromUrl(const Uri: RawUtf8): TFileName;
 // - returned P^ points to the first non digit char - not as GetNextItemQWord()
 function GetNextRange(var P: PUtf8Char): Qword;
 
+var
+  /// how many bytes of a HTTP body may be kept in memory (Http.Content)
+  // - checked against Content-Length: and against the running size of a
+  // chunked or close-delimited body, as an upstream mORMot 2.4 client does:
+  // a wrong or hostile header can not make the process allocate that much
+  // - a bigger body should be received into a stream
+  MaxHttpInMemSize: Int64 = 1 shl 30;
+
+  /// the biggest single chunk accepted from a Transfer-Encoding: chunked body
+  MaxHttpChunkSize: integer = 256 shl 20;
+
 const
   /// pseudo-header containing the current Synopse mORMot framework version
   XPOWEREDNAME = 'X-Powered-By';
@@ -3767,8 +3778,15 @@ begin
             if ContentStream = nil then
             begin
               // reserve appended chunk size to Content memory buffer
+              if length(Content) + fContentLeft > MaxHttpInMemSize then
+              begin
+                State := hrsErrorPayloadTooLarge; // avoid memory overflow
+                break;
+              end;
               SetLength(Content, length(Content) + fContentLeft);
-              fContentPos := @PByteArray(Content)[length(Content)];
+              // append at the previous end, not after the reallocated buffer
+              // (upstream 0ba98ed07: each chunk was written out of bounds)
+              fContentPos := @PByteArray(Content)[length(Content) - fContentLeft];
             end;
             inc(ContentLength, fContentLeft);
             State := hrsGetBodyChunkedData;
@@ -4321,6 +4339,8 @@ var
   chunk: RawByteString;
   len32, err: integer;
   len64: Int64;
+  res: TNetResult;
+  raw: array[word] of byte; // 64KB is big enough for INetTls or the socket API
 begin
   fBodyRetrieved := true;
   Http.Content := '';
@@ -4353,6 +4373,9 @@ begin
         SockRecvLn; // ignore next line (normally void)
         break; // reached the end of input stream
       end;
+      if (len32 < 0) or
+         (len32 > MaxHttpChunkSize) then
+        EHttpSocket.RaiseUtf8('%.GetBody: chunk size=% overflow', [self, len32]);
       if DestStream <> nil then
       begin
         if length({%H-}chunk) < len32 then
@@ -4362,7 +4385,10 @@ begin
       end
       else
       begin
-        SetLength(Http.Content, Http.ContentLength + len32); // reserve space for this chunk
+        len64 := Http.ContentLength + len32;
+        if len64 > MaxHttpInMemSize then // 1GB in memory max
+          EHttpSocket.RaiseUtf8('%.GetBody: chunked Content mem overflow', [self]);
+        SetLength(Http.Content, len64); // reserve space for this chunk
         SockInRead(@PByteArray(Http.Content)[Http.ContentLength], len32); // append data
       end;
       inc(Http.ContentLength, len32);
@@ -4388,6 +4414,9 @@ begin
     end
     else
     begin
+      if Http.ContentLength > MaxHttpInMemSize then // 1GB in memory max
+        EHttpSocket.RaiseUtf8('%.GetBody: Content-Length=% mem overflow',
+          [self, Http.ContentLength]);
       SetLength(Http.Content, Http.ContentLength); // not chuncked: direct read
       SockInRead(pointer(Http.Content), Http.ContentLength);
     end
@@ -4395,15 +4424,47 @@ begin
   begin
     // no Content-Length neither chunk -> read until the connection is closed
     // also for HTTP/1.1: https://www.rfc-editor.org/rfc/rfc7230#section-3.3.3
+    // - as raw bytes: a body is not lines of text (the previous readln loop
+    // turned a bare LF into CR LF) - see upstream mORMot 2.4
     if Assigned(OnLog) then
       OnLog(sllTrace, 'GetBody deprecated loop', [], self);
-    // body = either Content-Length or Transfer-Encoding (HTTP/1.1 RFC2616 4.3)
-    if SockIn <> nil then // client loop for compatibility with oldest servers
-      while not eof(SockIn^) do
-      begin
-        readln(SockIn^, line);
-        AppendLine(RawUtf8(Http.Content), [line]);
+    if SockIn <> nil then
+    begin
+      // first the body bytes already buffered in SockIn^ with the headers
+      len32 := SockInPending(0);
+      if len32 > 0 then
+        Http.Content := SockInRead(len32, {UseOnlySockIn=}true);
+    end;
+    repeat
+      // then the raw socket until it is closed - a timeout is an error, not
+      // the end of the body
+      case SockReceivePending(TimeOut) of
+        cspDataAvailable,
+        cspDataAvailableOnClosedSocket:
+          ;
+        cspSocketClosed:
+          break; // graceful close: the body is complete
+        cspNoData:
+          EHttpSocket.RaiseUtf8('%.GetBody: timeout after %ms waiting for ' +
+            'the end of a Connection: close body', [self, TimeOut]);
+      else
+        EHttpSocket.RaiseUtf8('%.GetBody: socket error waiting for the end ' +
+          'of a Connection: close body', [self]);
       end;
+      len32 := SizeOf(raw);
+      if not TrySockRecv(@raw, len32, {StopBeforeLength=}true, @res) then
+        if res = nrClosed then
+          break // graceful close: the body is complete
+        else
+          EHttpSocket.RaiseUtf8('%.GetBody: % reading a Connection: close body',
+            [self, ToText(res)^]);
+      if len32 = 0 then
+        continue; // nothing this time (e.g. TLS record pending): wait again
+      if length(Http.Content) + len32 > MaxHttpInMemSize then // 1GB max
+        EHttpSocket.RaiseUtf8('%.GetBody: close-delimited Content mem overflow',
+          [self]);
+      Append(Http.Content, @raw, len32);
+    until false;
     Http.ContentLength := length(Http.Content); // update Content-Length
     if DestStream <> nil then
     begin
