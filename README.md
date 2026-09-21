@@ -58,7 +58,8 @@ Useful repository entry points:
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — bundled component notices;
 - [`static/MANIFEST.sha256`](static/MANIFEST.sha256) — exact identities of the
   prebuilt static-link inputs;
-- [`tests/numbers`](tests/numbers) — black-box numeric parser qualification.
+- [`tests/numbers`](tests/numbers) — black-box numeric parser qualification;
+- [`tests/zip`](tests/zip) — ZIP read/copy/update regression with independent fixtures.
 
 ## Licensing
 

@@ -37,6 +37,7 @@ When any static binary is replaced, the same commit must identify its source rev
 ## Qualification boundary
 
 - `tests/numbers` provides black-box equivalence and boundary qualification for the numeric parser implementations.
+- `tests/zip` checks ZIP reads, copies, append and filtered updates against independent Python fixtures on Delphi Win64 and MoonCompiler Win64/Linux.
 - The allocator is qualified by the memory and Pulse suites in MoonCompiler, including size sweeps, realloc transitions, independent fuzzing, cross-thread frees and saturation profiles.
 - Product integration is additionally exercised by Moonbot and its Linux service builds.
 
@@ -68,3 +69,27 @@ worker to a different pool and increase latency. Matched-owner and forced-pendin
 tests cover that boundary. The existing deferred-free backlog is not repaired by
 this change, and idle time alone is not a completion guarantee. The single-block
 retention bound applies per arena/class, not to the entire process's memory.
+
+## ZIP descriptors and update offsets
+
+ZIP reads use the parsed central directory for final CRC, sizes and ZIP64 offsets.
+Append preserves the existing local-header offsets and starts at the actual central
+directory boundary, including archives with data descriptors. Copied or moved entries
+receive complete local headers without a descriptor flag. Rebuilt directories contain
+only the name and normalized ZIP64 fields that the writer actually emits.
+
+The repair also includes the archive base offset when copying disk-backed entries.
+A failed update constructor closes its output without writing a partial directory;
+this does not provide rollback after an in-place payload move.
+
+This is a local repair, compared against Synopse upstream
+`743a53fd4cb3af700463b0d143581ce17c6c8b31` on 2026-09-22. That snapshot still contains
+the descriptor search and append offset defects. It was inspected, not runtime-qualified.
+
+All 231 direct ZIP checks pass with MoonCompiler O-/O2/O3 on Win64/Linux and Delphi
+12 Win64 O-/O+. The preceding product pin `49b9cd4c2355ac382d4c5539b0257628a6409dfc`
+passes 81/231 on each compiler/platform. Fixtures cover signed/unsigned descriptors,
+empty entries, ZIP64 layouts, small working memory, append, copy, deletion, and failure
+before the first payload move. ZIP64 uses small forced fixtures; files over 4 GiB,
+metadata preservation, and filtered updates with reordered central directories are
+outside this qualification. Static binaries and the allocator are unchanged.
