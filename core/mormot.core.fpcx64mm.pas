@@ -5009,6 +5009,9 @@ asm
         {$endif LINUX}
         {$endif MSWINDOWS}
         {$ifdef FPCMM_ERMS}
+        {$ifdef LINUX}
+        db      $3E, $3E // keep the fused cmp/jae inside one 32-byte fetch line
+        {$endif LINUX}
         cmp     rbx, ErmsMinSize // startup cost of 0..255 bytes
         jae     @erms
         {$endif FPCMM_ERMS}
