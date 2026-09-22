@@ -15,7 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # need parent for diff
+          # full history: a push of several commits diffs before..after,
+          # and `before` must be reachable (depth 2 would see only the last one)
+          fetch-depth: 0
 
       - name: Bump version if code changed without manual bump
         run: bash .github/scripts/bump-version.sh "${{ github.event.before }}" "${{ github.sha }}"
