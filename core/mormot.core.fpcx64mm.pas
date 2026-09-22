@@ -3340,7 +3340,7 @@ asm     // size = rcx on Windows, = rdi on SystemV; use rsi = TSmallBlockType
         ret
         // Dead bytes preserve the accepted retry-block placement without
         // adding work to the overwhelmingly common tiny/small allocation.
-        db      $3E, $3E, $3E, $3E, $3E
+        db      $90, $90, $90, $90, $90
         {$else}
         jmp     @Quit
         {$endif NOSFRAME}
