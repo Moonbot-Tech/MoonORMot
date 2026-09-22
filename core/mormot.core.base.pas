@@ -55,6 +55,11 @@ const
   // commit.sh script) - so won't be reset when minor is up
   SYNOPSE_FRAMEWORK_VERSION = {$I ..\mormot.commit.inc};
 
+  /// MoonORMot patch counter: incremented with every code-changing commit
+  // - consumers (MoonCompiler runtime units, MoonBot, Arbitrage) check it
+  // at compile time via {$IF declared(MOONORMOT_VERSION)}
+  MOONORMOT_VERSION = {$I ..\moonormot.version.inc};
+
   /// a text including the version and the main active conditional options
   // - usefull for low-level debugging purpose
   SYNOPSE_FRAMEWORK_FULLVERSION  = SYNOPSE_FRAMEWORK_VERSION
