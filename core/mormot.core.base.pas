@@ -61,7 +61,7 @@ const
   MOONORMOT_VERSION = {$I ..\moonormot.version.inc};
 
   /// a text including the version and the main active conditional options
-  // - usefull for low-level debugging purpose
+  // - useful for low-level debugging purposes
   SYNOPSE_FRAMEWORK_FULLVERSION  = SYNOPSE_FRAMEWORK_VERSION
     {$ifdef FPC}
       {$ifdef FPC_X64MM}      + ' x64MM'
