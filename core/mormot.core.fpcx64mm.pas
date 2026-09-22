@@ -5003,15 +5003,15 @@ asm
         {$ifdef MSWINDOWS}
         mov     [rsp + 40], rax
         {$else}
+        {$if defined(LINUX) and defined(FPCMM_ERMS)}
+        db      $3E, $3E // shift cmp/jae without making cmp exceed 8 bytes
+        {$endif}
         push    rax
         {$ifdef LINUX}
         .cfi_def_cfa_offset 40
         {$endif LINUX}
         {$endif MSWINDOWS}
         {$ifdef FPCMM_ERMS}
-        {$ifdef LINUX}
-        db      $3E, $3E // keep the fused cmp/jae inside one 32-byte fetch line
-        {$endif LINUX}
         cmp     rbx, ErmsMinSize // startup cost of 0..255 bytes
         jae     @erms
         {$endif FPCMM_ERMS}
