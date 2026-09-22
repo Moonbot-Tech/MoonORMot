@@ -1,0 +1,21 @@
+name: version-bump
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    # Skip runs triggered by the bot itself to avoid any chance of loops
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # need parent for diff
+
+      - name: Bump version if code changed without manual bump
+        run: bash .github/scripts/bump-version.sh "${{ github.event.before }}" "${{ github.sha }}"
