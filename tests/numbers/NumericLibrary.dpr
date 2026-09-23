@@ -37,6 +37,19 @@ begin
   end;
 end;
 
+// the cursor entries through cdecl: FPC declares them ms_abi on SysV too
+function NextExtended(P: PUtf8Char; Ending: integer; out Error: integer; out Cursor: PUtf8Char): double; cdecl;
+begin
+  Cursor := P;
+  result := GetNextExtended(Cursor, Error, Ending);
+end;
+
+function NextInt64(P: PUtf8Char; Ending: integer; out Error: integer; out Cursor: PUtf8Char): Int64; cdecl;
+begin
+  Cursor := P;
+  result := GetNextInt64(Cursor, Error, Ending);
+end;
+
 function SetRounding(Mode: integer): integer; cdecl;
 begin
   result := ord(SetRoundMode(TFpuRoundingMode(Mode)));
@@ -71,7 +84,7 @@ begin
 end;
 
 exports
-  ParserAddress, SetRounding, CheckDocument;
+  ParserAddress, NextExtended, NextInt64, SetRounding, CheckDocument;
 
 begin
   SetRoundMode(rmNearest);

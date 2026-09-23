@@ -16,6 +16,11 @@ class Library:
         self.text = C.CFUNCTYPE(C.c_int64, C.c_void_p)(self.addresses[3])
         self.checked = C.CFUNCTYPE(C.c_int64, C.c_void_p, C.POINTER(C.c_int))(self.addresses[4])
         self.lib.SetRounding(0)
+        if hasattr(self.lib, 'NextExtended'):
+            for name, result in (('NextExtended', C.c_double), ('NextInt64', C.c_int64)):
+                entry = getattr(self.lib, name)
+                entry.argtypes = [C.c_void_p, C.c_int, C.POINTER(C.c_int), C.POINTER(C.c_void_p)]
+                entry.restype = result
 
 class Pages:
     """Two readable pages followed by a guard, for exact ending-byte placement."""

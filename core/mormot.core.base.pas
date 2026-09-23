@@ -1381,6 +1381,32 @@ function GetExtended(P: PUtf8Char; out err: integer): TSynExtended; overload;
 function GetExtended(P: PUtf8Char): TSynExtended; overload;
   {$ifdef HASINLINE}inline;{$endif}
 
+{$ifdef NUMBERS_ASMX64}
+const
+  /// GetNextExtended/GetNextInt64 Ending of an unquoted JSON number
+  NUMBER_ENDING_JSON = 256;
+
+/// parse the number at P^ as GetExtended() does, then leave P on the byte after it
+// - Ending selects what may follow the number: 0 = the #0 of GetExtended() text,
+// ord('"') = the closing quote of the same text inside a JSON string,
+// NUMBER_ENDING_JSON = a JSON delimiter (#0, spaces, ',', ']', '}') after an unquoted
+// JSON number, whose grammar is then checked (a digit first, no leading 0, a digit
+// after the dot)
+// - err = 0 on success, with P on that ending byte; otherwise err <> 0 and P is
+// unspecified; the value and err otherwise follow GetExtended()
+// - P belongs to a #0 ended text, as for GetExtended()
+// - generated from GetExtended() by core/number-layout/next.py
+function GetNextExtended(var P: PUtf8Char; out err: integer; Ending: integer): double;
+  {$ifdef FPC} ms_abi_default; {$endif}
+
+/// parse the integer at P^ as GetInteger(P, err) does, then leave P on the byte after it
+// - Ending as for GetNextExtended(); inside a JSON string (ord('"')), control
+// characters other than spaces are rejected before the digits
+// - generated from GetInteger(P, err) by core/number-layout/next.py
+function GetNextInt64(var P: PUtf8Char; out err: integer; Ending: integer): Int64;
+  {$ifdef FPC} ms_abi_default; {$endif}
+{$endif NUMBERS_ASMX64}
+
 type
   TPow10 = array[-31..55] of TSynExtended;
   PPow10 = ^TPow10;

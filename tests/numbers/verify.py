@@ -1,4 +1,5 @@
 """Deterministic, byte-exact five-entry qualification across libraries, paths and ABIs.
+The cursor entries GetNextExtended/GetNextInt64 are checked against GetExtended/GetInteger(P, err).
 
 python verify.py LIBRARY --sse2 SSE2_LIBRARY [--reference WHOLE.dll] [--corpus LAB/data] [--write result.json]
 python verify.py LIBRARY --sse2 SSE2_LIBRARY --corpus DATA --expect win64.json
@@ -6,7 +7,7 @@ python verify.py LIBRARY --sse2 SSE2_LIBRARY --corpus DATA --expect win64.json
 The digest contains value bits, errors, JSON types/cursors, and both AllowDouble states.
 No library address or padding byte enters it. A mismatch fails the process.
 """
-import argparse, ctypes as C, hashlib, json, random, struct, time
+import argparse, ctypes as C, hashlib, json, random, re, struct, time
 from pathlib import Path
 from numeric_api import Library, Pages
 
@@ -67,6 +68,37 @@ def record(lib, p, bound):
     k = lib.checked(p, C.byref(e))
     return out + struct.pack('<qqqi', b, t, k, e.value)
 
+JSON_NUMBER = re.compile(rb'-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?')
+JSON_INTEGER = re.compile(rb'-?(0|[1-9][0-9]*)')
+JSON_DELIMITERS = set(b'\0\t\n\r ,]}')
+
+def cursor(lib, pages, raw, tail, offset):
+    """GetNextExtended/GetNextInt64 = GetExtended/GetInteger(P, err) on the same text, P on its ending byte."""
+    if not hasattr(lib.lib, 'NextExtended'):
+        return b''
+    text = raw.split(b'\0', 1)[0]
+    p = pages.put(text, tail, offset)
+    e = C.c_int(-1)
+    string = (struct.pack('<d', lib.string(p, C.byref(e))), e.value)
+    integer = (struct.pack('<q', lib.checked(p, C.byref(e))), e.value)
+    inside = bool(JSON_DELIMITERS & set(text))
+    out = b''
+    for ending, after in ((0, b''), (34, b'"'), (256, b','), (256, b'}'), (256, b' '), (256, b'')):
+        q = pages.put(text + after, tail, offset)
+        for entry, pack, ref, json, quoted in (
+                (lib.lib.NextExtended, '<d', string, JSON_NUMBER.fullmatch(text), b'"' not in text),
+                (lib.lib.NextInt64, '<q', integer, JSON_INTEGER.fullmatch(text), b'"' not in text and min(text, default=32) >= 32)):
+            e = C.c_int(-7)
+            c = C.c_void_p(0)
+            bits = struct.pack(pack, entry(q, ending, C.byref(e), C.byref(c)))
+            if ending == 0 or (ending == 34 and quoted) or (ending == 256 and json):
+                assert (bits, e.value) == ref, (entry.__name__, ending, raw, bits.hex(), e.value, ref)
+                assert e.value or c.value == q + len(text), (entry.__name__, ending, raw, 'cursor')
+            elif ending == 256 and not inside:
+                assert e.value, (entry.__name__, raw, 'accepted outside the JSON grammar')
+            out += bits + struct.pack('<ii', e.value, c.value - q if e.value == 0 else -1)
+    return out
+
 def regressions(lib, pages):
     # Representable exponent, but adding the fractional scale overflows Int64.
     for tail in (False, True):
@@ -119,6 +151,7 @@ def main():
                         expected = record(reference, p, bound)
                         assert got == expected, (path, tail, i, raw, got.hex(), expected.hex())
                     digest.update(got)
+                    digest.update(cursor(lib, pages, raw, tail, i & 63))
                 row = dict(path=path, guard=tail, cases=len(texts), sha256=digest.hexdigest())
                 print(row, flush=True)
                 rows.append(row)

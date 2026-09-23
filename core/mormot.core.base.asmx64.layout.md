@@ -56,6 +56,7 @@ python tests/numbers/verify.py tests/numbers/bin/NumericLibrary.dll --sse2 tests
 python tests/numbers/dump_code.py tests/numbers/bin/NumericLibrary.dll > win64-code.json
 python core/number-layout/layout.py check win64-code.json win64
 python core/number-layout/layout.py source-check
+python core/number-layout/next.py --check
 ```
 
 On Linux, run `verify.py libNumericLibrary-release.so --sse2
@@ -65,16 +66,34 @@ sysv-code.json sysv`; this can run on Windows, so the host needs only Python's
 standard library. Repeat runtime verification for Debug and the Unicode RTL build.
 
 The build scripts produce separate native and forced-SSE2 libraries. Runtime tests
-call only the five public parsing APIs; they neither read nor mutate internal unit
-state. The layout checker derives the shared internal table address from the built
+call only the public parsing APIs; they neither read nor mutate internal unit
+state. The two cursor entries are called through cdecl exports of the library
+(FPC declares them `ms_abi_default` on SysV), the five others by their addresses. The layout checker derives the shared internal table address from the built
 RIP-relative instructions instead of exporting the table through the test library.
 
 The checker compares every instruction's offset, length and mnemonic, every
 branch destination, DS placement, dead gap, table alignment, required loop and
-JCC16 boundary against the built code. Runtime digests contain all five APIs,
+JCC16 boundary against the built code. Runtime digests contain all seven APIs,
 both JSON AllowVarDouble states, types, values, error flags and returned cursors.
 They must agree with SIMD disabled and at a guard-page edge. The external NumberLab
 adds accuracy/oracle, spelling, delimiter, consumer and balanced timing tests.
+
+## Cursor entries
+
+`GetNextExtended(P, err, Ending)` and `GetNextInt64(P, err, Ending)` are
+`GetExtended` and `GetInteger(P, err)` that leave `P` on the byte after the number
+and accept a chosen ending: `#0`, the closing quote of a JSON string, or a JSON
+delimiter after an unquoted JSON number (then with the JSON grammar). A JSON reader
+converts a number in place without first searching for its end.
+
+They are not written by hand and not placed by the layout tools: `next.py` derives
+them from the generated Win64 bodies of the two originals, adding only the cursor,
+the ending and the JSON checks; it asserts that every numeric instruction is kept.
+FPC runs the same Win64 body on SysV (`ms_abi_default`). After any change of the
+string or integer routine (their sheets, the shared table or the code), rerun
+`python core/number-layout/next.py`. `next.py --check` fails while the include is
+stale, and `verify.py` compares both entries with the originals on every case:
+the same value bits and error, and the cursor on the ending byte.
 
 After changing a compiler, first check the actual binary. If nonbranch encodings
 changed, use an unpadded build to refresh them with `layout.py measure DUMP
