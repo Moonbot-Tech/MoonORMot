@@ -5637,6 +5637,10 @@ asm
         and     ebx, 8
         movaps  oword ptr [rdx + rbx - 16], xmm0
         jmp     @LastQ
+        // One dead byte behind the jump: the compiler appends its ret at @End
+        // and, since it pads no ret, that ret would lie on byte 31 of a
+        // 32-byte line and end on the boundary (rule 4, Intel)
+        db      $CC
 @End:
         {$ifdef LINUX}
         .cfi_def_cfa_offset 8
