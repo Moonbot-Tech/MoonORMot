@@ -2636,6 +2636,7 @@ asm
         {$endif MSWINDOWS}
 end;
 
+{$push}{$codealign proc=64} // layout: the entry on a 64-byte line
 procedure InsertMediumBlockIntoBin; nostackframe; assembler;
 // rcx=P edx=blocksize r10=TMediumBlockInfo - even on POSIX
 asm
@@ -2698,6 +2699,7 @@ asm
         or      [r10 + TMediumBlockInfo.BinGroupBitmap], eax
 @Done:
 end;
+{$pop}
 
 procedure RemoveMediumFreeBlock; nostackframe; assembler;
 asm
@@ -3169,6 +3171,10 @@ end;
 
 
 { ********* Main Memory Manager Functions }
+
+// layout: the entries of the hand-laid routines from here to _AllocMem on
+// 64-byte lines (doc/ASM_LAYOUT_RULES.md, rule 1)
+{$push}{$codealign proc=64}
 
 {$ifdef MSWINDOWS}
 function _GetMemSlow(size: PtrUInt): pointer;
@@ -4068,7 +4074,7 @@ asm
         xor     eax, eax
         mov     r9d, 1
         cmp     byte ptr [r10].TSmallBlockType.Locked, false
-        jne     @Slow
+        db      $75, $73 // jne @Slow (rel8 written out, doc/ASM_LAYOUT_RULES.md)
   lock  cmpxchg byte ptr [r10].TSmallBlockType.Locked, r9b
         jne     @Slow
         mov     rdx, [r10].TSmallBlockType.NextPartiallyFreePool
@@ -4181,7 +4187,7 @@ asm
         mov     rcx, [r11 + rbx - BlockHeaderSize]
         // Can we combine this block with the next free block?
         test    qword ptr [r11 + rbx - BlockHeaderSize], IsFreeBlockFlag
-        jnz     @NextBlockIsFree
+        db      $75, $7B // jnz @NextBlockIsFree (rel8 written out, doc/ASM_LAYOUT_RULES.md)
         // Set the "PreviousIsFree" flag in the next block
         or      rcx, PreviousMediumBlockIsFreeFlag
         mov     [r11 + rbx - BlockHeaderSize], rcx
@@ -4739,9 +4745,9 @@ asm
         xor     eax, eax
         mov     r9d, 1
         cmp     byte ptr [r10].TSmallBlockType.Locked, false
-        jne     @Deferred
+        db      $75, $7C // jne @Deferred (rel8 written out, doc/ASM_LAYOUT_RULES.md)
   lock  cmpxchg byte ptr [r10].TSmallBlockType.Locked, r9b
-        jne     @Deferred
+        db      $75, $75 // jne @Deferred (rel8 written out)
         // A pending cross-thread bin needs the draining loop in the slow path.
         cmp     dword ptr [r10].TSmallBlockType.LastFreeCount, 0
         jne     @UnlockSlow
@@ -5217,7 +5223,11 @@ asm
         and     eax, DropMediumAndLargeFlagsMask
         lea     rsi, [rax + rcx]
         cmp     rdx, rsi
+        {$ifdef MSWINDOWS}
         ja      @NextMediumBlockChanged
+        {$else}
+        db      $77, $78 // ja @NextMediumBlockChanged (rel8 written out, doc/ASM_LAYOUT_RULES.md)
+        {$endif MSWINDOWS}
 @DoMediumInPlaceUpsize:
         // Bin next free block (if worth it)
         cmp     eax, MinimumMediumBlockSize
@@ -5648,6 +5658,8 @@ asm
         {$endif LINUX}
         {$endif FPCMM_ERMS}
 end;
+
+{$pop}
 
 function _MemSize(P: pointer): PtrUInt;
 begin
@@ -7049,13 +7061,14 @@ end;
 {$I+}
 
 {$ifdef MSWINDOWS}
+{$push}{$codealign proc=64} // layout: the entry on a 64-byte line
 function FreeSmallPoolLockedHandoff(P, Pool: pointer): PtrUInt; nostackframe; assembler;
 asm
         sub     rsp, 40
         .seh_stackalloc 40
         .seh_endprologue
         cmp     dword ptr [r10].TSmallBlockType.LastFreeCount, 0
-        jne     @Pending
+        db      $75, $76 // jne @Pending (rel8 written out, doc/ASM_LAYOUT_RULES.md)
         add     [r10].TSmallBlockType.FreememCount, 1
         mov     rax, [rdx].TSmallBlockPoolHeader.FirstFreeBlock
         sub     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
@@ -7104,6 +7117,7 @@ asm
         add     rsp, 40
         jmp     _FreeMemSlow
 end;
+{$pop}
 
 {$endif MSWINDOWS}
 
