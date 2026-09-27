@@ -7068,7 +7068,11 @@ asm
         .seh_stackalloc 40
         .seh_endprologue
         cmp     dword ptr [r10].TSmallBlockType.LastFreeCount, 0
+        {$if defined(FPCMM_MOONSHARD) and defined(FPCMM_MULTIPLESMALLNOTWITHMEDIUM)}
         db      $75, $76 // jne @Pending (rel8 written out, doc/ASM_LAYOUT_RULES.md)
+        {$else} // the span below has other bytes in another profile
+        jne     @Pending
+        {$ifend}
         add     [r10].TSmallBlockType.FreememCount, 1
         mov     rax, [rdx].TSmallBlockPoolHeader.FirstFreeBlock
         sub     [rdx].TSmallBlockPoolHeader.BlocksInUse, 1
