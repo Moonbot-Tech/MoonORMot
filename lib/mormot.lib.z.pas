@@ -29,6 +29,9 @@ interface
 
   // select best known choice if not overriden for the whole project
   {$ifdef FPC}
+    {$ifdef MOONCOMPILER_SYSTEM_ZLIB}
+      {$define ZLIBRTL}    // MoonCompiler Win64 Linux: System.ZLib of its RTL
+    {$else}
     {$ifdef OSWINDOWS}
       {$define ZLIBSTATIC} // FPC Win32 Win64: we supply our static .o
     {$else}
@@ -38,6 +41,7 @@ interface
         {$define ZLIBEXT}  // FPC other POSIX: system's libz.so
       {$endif OSANDROID}
     {$endif OSWINDOWS}
+    {$endif MOONCOMPILER_SYSTEM_ZLIB}
   {$else not FPC}
     {$ifdef WIN32}
       {$define ZLIBSTATIC} // Delphi Win32: our static .obj
@@ -64,7 +68,11 @@ uses
   paszlib,
   {$endif ZLIBPAS}
   {$ifdef ZLIBRTL}
+  {$ifdef FPC}
+  System.ZLib, // the unit of MoonCompiler, not FPC's binding named zlib
+  {$else}
   zlib,
+  {$endif FPC}
   {$endif ZLIBRTL}
   {$if defined(LIBDEFLATESTATIC) or
        defined(ZLIBSTATIC)}
@@ -85,7 +93,7 @@ type
   {$else}
 
   {$ifdef ZLIBRTL}
-  TZStream = zlib.z_Stream;
+  TZStream = {$ifdef FPC}System.ZLib.z_stream{$else}zlib.z_Stream{$endif};
   TZCRC = PtrUInt;
   {$else}
 
@@ -735,17 +743,19 @@ end;
 {$endif ZLIBPAS}
 
 {$ifdef ZLIBRTL}
+{$ifndef LIBDEFLATESTATIC} // MoonCompiler Linux: the libdeflate ones below
 
 function crc32(crc: TZCRC; buf: pointer; len: cardinal): TZCRC;
 begin
-  result := zlib.crc32(crc, buf, len);
+  result := {$ifdef FPC}System.ZLib{$else}zlib{$endif}.crc32(crc, buf, len);
 end;
 
 function adler32(adler: TZCRC; buf: pointer; len: cardinal): TZCRC;
 begin
-  result := zlib.adler32(adler, buf, len);
+  result := {$ifdef FPC}System.ZLib{$else}zlib{$endif}.adler32(adler, buf, len);
 end;
 
+{$endif LIBDEFLATESTATIC}
 {$endif ZLIBRTL}
 
 

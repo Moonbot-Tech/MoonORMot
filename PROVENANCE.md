@@ -22,7 +22,8 @@ The derivative keeps the broad mORMot source surface required by Moonbot while a
 - Delphi-compatible Unicode boundaries for the MoonCompiler Win64 and Linux x86-64 product profiles;
 - qualified x86-64 number parsing for Delphi Win64 and FPC System V/Win64 ABIs;
 - the Moonbot memory-manager profile, diagnostics and stress-tested allocator repairs;
-- selected correctness and lifecycle fixes discovered while compiling and qualifying production Moonbot workloads.
+- selected correctness and lifecycle fixes discovered while compiling and qualifying production Moonbot workloads;
+- one zlib under MoonCompiler: the compiler defines `MOONCOMPILER_SYSTEM_ZLIB`, and `mormot.lib.z` then compresses through `System.ZLib` of its RTL (zlib 1.3.1, Win64 and Linux) instead of the bundled static zlib 1.2.11 (Win64) or the system libz (Linux); libdeflate keeps the whole-buffer calls and the checksums on Linux, and Delphi builds and other compilers keep their own choice.
 
 These changes do not transfer authorship of mORMot itself. mORMot is Arnaud Bouchez's project, and the original copyrights and per-file notices are retained with gratitude.
 
