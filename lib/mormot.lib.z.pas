@@ -68,7 +68,7 @@ uses
   paszlib,
   {$endif ZLIBPAS}
   {$ifdef ZLIBRTL}
-  {$ifdef FPC}
+  {$ifdef MOONCOMPILER_SYSTEM_ZLIB}
   System.ZLib, // the unit of MoonCompiler, not FPC's binding named zlib
   {$else}
   zlib,
@@ -93,7 +93,7 @@ type
   {$else}
 
   {$ifdef ZLIBRTL}
-  TZStream = {$ifdef FPC}System.ZLib.z_stream{$else}zlib.z_Stream{$endif};
+  TZStream = {$ifdef MOONCOMPILER_SYSTEM_ZLIB}System.ZLib.z_stream{$else}zlib.z_Stream{$endif};
   TZCRC = PtrUInt;
   {$else}
 
@@ -747,12 +747,12 @@ end;
 
 function crc32(crc: TZCRC; buf: pointer; len: cardinal): TZCRC;
 begin
-  result := {$ifdef FPC}System.ZLib{$else}zlib{$endif}.crc32(crc, buf, len);
+  result := {$ifdef MOONCOMPILER_SYSTEM_ZLIB}System.ZLib{$else}zlib{$endif}.crc32(crc, buf, len);
 end;
 
 function adler32(adler: TZCRC; buf: pointer; len: cardinal): TZCRC;
 begin
-  result := {$ifdef FPC}System.ZLib{$else}zlib{$endif}.adler32(adler, buf, len);
+  result := {$ifdef MOONCOMPILER_SYSTEM_ZLIB}System.ZLib{$else}zlib{$endif}.adler32(adler, buf, len);
 end;
 
 {$endif LIBDEFLATESTATIC}
