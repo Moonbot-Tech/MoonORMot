@@ -7172,6 +7172,7 @@ end;
 
 initialization
   InitializeMemoryManager;
+  OldMM := Default(TMemoryManager);
   GetMemoryManager(OldMM);
   SetMemoryManager(NewMM);
   {$ifndef FPCMM_UNINSTALL_AT_EXIT}
