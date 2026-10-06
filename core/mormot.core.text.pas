@@ -4036,6 +4036,8 @@ begin
     // nothing to change about internal buffer size
     exit;
   GetMem(newbuf, tmp);
+  if newbuf = nil then
+    exit; // optional growth: keep the existing, already flushed buffer
   if twoBufferIsExternal in fCustomOptions then
     // use heap, not stack from now on
     exclude(fCustomOptions, twoBufferIsExternal)

@@ -94,3 +94,16 @@ empty entries, ZIP64 layouts, small working memory, append, copy, deletion, and 
 before the first payload move. ZIP64 uses small forced fixtures; files over 4 GiB,
 metadata preservation, and filtered updates with reordered central directories are
 outside this qualification. Static binaries and the allocator are unchanged.
+
+## Optional text-writer buffer growth
+
+`TTextWriter.FlushToStream` retains its current empty buffer when the optional
+growth allocation returns nil. This completes the earlier allocation-before-free
+repair, which preserved state on an exception but did not handle nil. Pointer,
+capacity and external-buffer ownership are changed only after successful allocation;
+already flushed output and the existing exception behavior are preserved.
+
+`tests/textwriter` checks both growth thresholds, owned/external buffers, nil and
+exception failure, successful growth and continued output in Debug and Release.
+This does not claim general out-of-memory recovery for mORMot constructors or
+stream writes. Static binaries and the allocator are unchanged.
