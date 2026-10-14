@@ -132,11 +132,14 @@ type
     fReadThread: TSynThread;
     // how many bytes have been transmitted via Send() and Recv() methods
     fBytesRecv, fBytesSend: Int64;
+    /// one owner for OnClose -> Stop -> OnClosed; reset only on Recycle
+    fCloseStarted: PtrUInt;
     {$ifdef USE_WINIOCP}
     // opaque Windows IOCP instances returned by TWinIocp.Subscribe()
     fIocp: PWinIocpSubscription; // a single IOCP queue for wieRecv+wieSend
     function IocpPrepareNextWrite(queue: TWinIocp): boolean;
     {$endif USE_WINIOCP}
+    function TryBeginClose: boolean;
     /// called when the instance is connected to a poll, after Create or Recycle
     // - i.e. at the end of TAsyncConnections.ConnectionNew(), when Handle is set
     // - overriding this method is cheaper than its plain Create destructor
@@ -297,7 +300,7 @@ type
     procedure RegisterConnection(connection: TPollAsyncConnection); virtual; abstract;
     function SubscribeConnection(const caller: shortstring;
       connection: TPollAsyncConnection; sub: TPollSocketEvent): boolean;
-    procedure CloseConnection(var connection: TPollAsyncConnection;
+    procedure CloseConnectionStarted(connection: TPollAsyncConnection;
       const caller: shortstring);
     function RawWrite(connection: TPollAsyncConnection;
       var data: PByte; var datalen: integer): boolean;
@@ -321,11 +324,19 @@ type
     // send any pending data once the socket is ready
     // - any manual call of Start() should ensure the connection is non-blocking
     function Start(connection: TPollAsyncConnection): boolean; virtual;
+    /// close and retire a connection exactly once, clearing the supplied reference
+    // - concurrent/reentrant calls leave closing to its first caller
+    // - use this instead of manually calling OnClose, Stop and EndConnection
+    // - caller must keep the instance alive; this is not a reference-counted handle
+    // - do not hold the owner's ConnectionLock: OnClosed removes from that list
+    procedure CloseConnection(var connection: TPollAsyncConnection;
+      const caller: shortstring);
     /// remove a connection from the internal poll, and shutdown its socket
     // - most of the time, the connection is released by OnClosed when the other
     // end shutdown the socket; but you can explicitly call this method when
     // the connection (and its socket) is to be shutdown
-    // - this method won't call OnClosed, since it is initiated by the class
+    // - low-level operation for the close owner; it neither claims closing nor
+    // calls OnClose/OnClosed. Application close requests should use CloseConnection.
     function Stop(connection: TPollAsyncConnection;
       const caller: shortstring): boolean; virtual;
     /// add some data to the asynchronous output buffer of a given connection
@@ -690,6 +701,7 @@ type
     /// remove an handle from the internal list, and close its connection
     // - raise an exception if acoNoConnectionTrack option was defined
     // - could be executed e.g. from a TAsyncConnection.OnRead method
+    // - returns false if missing or already being closed; calls OnClose before Stop
     function ConnectionRemove(aHandle: TPollAsyncConnectionHandle): boolean;
     /// call ConnectionRemove unless acoNoConnectionTrack is set
     procedure EndConnection(connection: TAsyncConnection);
@@ -1506,6 +1518,12 @@ begin
   fRW[writer and fLockMax].Lock:= 0;
 end;
 
+function TPollAsyncConnection.TryBeginClose: boolean;
+begin
+  result := not IsDangling and
+            LockedExc(fCloseStarted, 1, 0);
+end;
+
 procedure TPollAsyncConnection.OnClose;
 begin
   include(fFlags, fClosed);
@@ -1957,21 +1975,19 @@ procedure TPollAsyncSockets.UnlockAndCloseConnection(writer: boolean;
   var connection: TPollAsyncConnection; const caller: ShortString);
 var
   c: TPollAsyncConnection;
+  closing: boolean;
 begin
   c := connection;
   connection := nil;
-  if (c = nil) or
-     (fClosed in c.fFlags) then
+  if c = nil then
     exit;
-  {if fDebugLog <> nil then
-    DoLog('UnlockSlotAndCloseConnection: % on handle=%',
-      [caller, connection.Handle]);}
-  // first unlock (if needed)
-  c.UnLockFinal(writer);
-  // optional process - e.g. TWebSocketAsyncConnection = focConnectionClose
-  c.OnClose; // called before slot/socket closing - set fClosed flag
-  // Stop() will try to acquire this lock -> notify no need to wait
-  CloseConnection(c, caller);
+  closing := c.TryBeginClose;
+  // A losing closer still releases its own lock, but never another thread's:
+  // Write may also get here after WaitLock failed.
+  if c.fRW[writer and c.fLockMax].ThreadID = GetCurrentThreadId then
+    c.UnLockFinal(writer);
+  if closing then
+    CloseConnectionStarted(c, caller);
 end;
 
 function TPollAsyncSockets.SubscribeConnection(const caller: shortstring;
@@ -2022,18 +2038,33 @@ end;
 
 procedure TPollAsyncSockets.CloseConnection(
   var connection: TPollAsyncConnection; const caller: shortstring);
+var
+  c: TPollAsyncConnection;
 begin
-  if not connection.IsDangling then
+  c := connection;
+  connection := nil;
+  if (c <> nil) and
+     c.TryBeginClose then
+    CloseConnectionStarted(c, caller);
+end;
+
+procedure TPollAsyncSockets.CloseConnectionStarted(
+  connection: TPollAsyncConnection; const caller: shortstring);
+begin
+  // Only the caller which claimed TryBeginClose may reach this sequence. fClosed
+  // is set by a virtual callback, so it cannot serialize concurrent closers.
   try
     if not (fClosed in connection.fFlags) then
-      // if not already done in UnlockAndCloseConnection
-      connection.OnClose; // called before slot/socket closing
-    // set socket := nil and async unsubscribe for next PollForPendingEvents()
-    Stop(connection, caller);
-    // now safe to perform fOwner.ConnectionDelete() for async instance GC
-    OnClosed(connection);
+      try
+        connection.OnClose; // e.g. the WebSocket close notification
+      except
+        // A failing notification must not strand this claimed connection.
+      end;
+    include(connection.fFlags, fClosed); // also if an override failed before inherited
+    Stop(connection, caller); // may block after setting fSocket := nil
+    OnClosed(connection);     // publish to GC only after that Stop has returned
   except
-    connection := nil;   // user code may be unstable
+    // Preserve the existing exception policy: user callbacks may be unstable.
   end;
 end;
 
@@ -2391,6 +2422,7 @@ begin
   fLockMax := false;
   fFlags := [fFromGC, fWasActive];
   fInternalFlags := [];
+  fCloseStarted := 0;
   fRd.Reset;
   fWr.Reset;
   FillCharFast(fRW, SizeOf(fRW), 0);
@@ -3387,7 +3419,6 @@ end;
 function TAsyncConnections.ConnectionRemove(
   aHandle: TPollAsyncConnectionHandle): boolean;
 var
-  i: integer; // integer, not PtrInt for ConnectionFindAndLock(@i)
   conn: TAsyncConnection;
 begin
   result := false;
@@ -3395,16 +3426,18 @@ begin
      Terminated or
      (aHandle <= 0) then
     exit;
-  conn := ConnectionFindAndLock(aHandle, cWrite, @i);
+  // Claim while the list still protects the pointer, then release its lock:
+  // OnClose callbacks and OnClosed may themselves access the connection list.
+  conn := ConnectionFindAndLock(aHandle, cReadOnly);
   if conn <> nil then
     try
-      if not fClients.Stop(conn, 'ConnectionRemove') then
-        DoLog(sllDebug, 'ConnectionRemove: Stop=false for %', [conn], self);
-      result := LockedConnectionDelete(conn, i);
+      result := conn.TryBeginClose;
     finally
-      fConnectionLock.WriteUnLock;
+      fConnectionLock.ReadOnlyUnLock;
     end;
-  if not result then
+  if result then
+    fClients.CloseConnectionStarted(conn, 'ConnectionRemove')
+  else
     DoLog(sllTrace, 'ConnectionRemove(%)=false', [aHandle], self);
 end;
 

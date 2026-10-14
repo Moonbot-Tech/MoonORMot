@@ -107,3 +107,34 @@ already flushed output and the existing exception behavior are preserved.
 exception failure, successful growth and continued output in Debug and Release.
 This does not claim general out-of-memory recovery for mORMot constructors or
 stream writes. Static binaries and the allocator are unchanged.
+
+## Async connection close ownership
+
+MoonORMot 14 atomically claims the complete `OnClose -> Stop -> OnClosed`
+sequence before entering a virtual callback. Direct close, unlock-and-close
+and `ConnectionRemove` share this claim; a second closer cannot publish the
+instance to GC while the owner is still in a callback or socket shutdown.
+Recycling resets the claim. A losing unlock-and-close releases only a lock
+owned by its current thread. An exception in `OnClose` does not prevent socket
+closure; the existing conservative handling of failures in `Stop`/`OnClosed`
+is retained.
+
+`CloseConnection` is public for application close requests. `ConnectionRemove`
+claims the instance while the list protects it, then calls the same closing
+sequence outside the list lock, allowing callbacks to access that list.
+Manual low-level `Stop`/`EndConnection` sequences and external object lifetime
+are not made safe by this claim; applications must use the common entry point
+and keep their lifetime/shutdown holds.
+
+Compared on 2026-10-14 against Synopse upstream
+`a1725c69d341221927a82001d0bd36ca8e127c0b`. Upstream has refactored this code,
+including final lock acquisition with a 500 ms fallback to `ForceLock`, but
+still calls `OnClosed` after `Stop` regardless of its result and leaves
+`ConnectionRemove` on a separate stop/delete path. It has no exclusive claim
+covering these paths. This upstream comparison is source-based; the upstream
+tree was not runtime-qualified by these tests.
+
+`tests/asyncclose` exercises forced interleavings, callbacks, recycling, tracked
+and untracked GC publication, and live loopback close/reply behavior with
+MoonCompiler 2.4.6 Debug/Release on Win64 and Linux x86-64. Delphi qualification
+is outside this change. Static binaries and the allocator are unchanged.
