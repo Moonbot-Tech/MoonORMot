@@ -2505,7 +2505,13 @@ begin
   result := socket.MakeAsync;
   if result <> nrOK then
     exit;
-  connect(socket.Socket, @Addr, Size); // non-blocking connect() once
+  if connect(socket.Socket, @Addr, Size) <> NO_ERROR then // non-blocking connect() once
+  begin
+    result := NetLastError{$ifdef OSPOSIX}(ESysEINTR){$endif};
+    if result > nrRetry then
+      exit; // preserve the immediate native error before MakeBlocking/poll/SO_ERROR
+    result := nrOK; // a pending asynchronous connect was successfully started
+  end;
   if ms < 0 then
     exit; // don't wait now
   socket.MakeBlocking;
