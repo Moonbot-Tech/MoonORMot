@@ -1981,6 +1981,7 @@ function SSL_CTX_check_private_key(ctx: PSSL_CTX): integer; cdecl;
 function SSL_CTX_use_certificate_file(ctx: PSSL_CTX; _file: PUtf8Char;
    typ: integer): integer; cdecl;
 function SSL_CTX_get_cert_store(p1: PSSL_CTX): PX509_STORE; cdecl;
+procedure SSL_CTX_set_cert_store(ctx: PSSL_CTX; store: PX509_STORE); cdecl;
 function SSL_CTX_load_verify_locations(ctx: PSSL_CTX;
    CAfile: PUtf8Char; CApath: PUtf8Char): integer; cdecl;
 function SSL_CTX_use_certificate_chain_file(ctx: PSSL_CTX; _file: PUtf8Char): integer; cdecl;
@@ -2636,6 +2637,18 @@ function GetPeerCertFromUrl(const url: RawUtf8): PX509DynArray;
 /// retrieve the peer certificates PEM chain from a given HTTPS server URI
 function GetPeerCertPemFromUrl(const url: RawUtf8): RawUtf8;
 
+/// initialize a fresh client context from the shared default CA store
+// - refreshes lazily after MaxAgeMS (one hour by default), or after explicit clear
+// - changes to CA files, directories and SSL_CERT_FILE/DIR use this same policy
+// - use only with the default OpenSSL library context and stable provider lifetime
+// - MaxAgeMS=0 bypasses the cache; existing connections retain their store
+// - the returned store is shared: do not mutate it through this context
+function OpenSslLoadDefaultTrust(ctx: PSSL_CTX; MaxAgeMS: cardinal = 3600000): integer;
+
+/// make the next default-trust connection reload its CA sources
+// - call after an application-managed trust update; existing connections stay valid
+procedure OpenSslClearDefaultTrust;
+
 /// retrieve the peer certificates information from a given HTTPS server URI
 function GetPeerCertInfoFromUrl(const url: RawUtf8): RawUtf8;
 
@@ -2663,6 +2676,7 @@ type
     SSL_CTX_check_private_key: function(ctx: PSSL_CTX): integer; cdecl;
     SSL_CTX_use_certificate_file: function(ctx: PSSL_CTX; _file: PUtf8Char; typ: integer): integer; cdecl;
     SSL_CTX_get_cert_store: function(p1: PSSL_CTX): PX509_STORE; cdecl;
+    SSL_CTX_set_cert_store: procedure(ctx: PSSL_CTX; store: PX509_STORE); cdecl;
     SSL_CTX_load_verify_locations: function(ctx: PSSL_CTX; CAfile: PUtf8Char; CApath: PUtf8Char): integer; cdecl;
     SSL_CTX_use_certificate_chain_file: function(ctx: PSSL_CTX; _file: PUtf8Char): integer; cdecl;
     SSL_CTX_set_alpn_protos: function(ctx: PSSL_CTX; protos: PByte; protos_len: cardinal): integer; cdecl;
@@ -2711,7 +2725,7 @@ type
   end;
 
 const
-  LIBSSL_ENTRIES: array[0..55] of RawUtf8 = (
+  LIBSSL_ENTRIES: array[0..56] of RawUtf8 = (
     'SSL_CTX_new',
     'SSL_CTX_free',
     'SSL_CTX_set_timeout',
@@ -2724,6 +2738,7 @@ const
     'SSL_CTX_check_private_key',
     'SSL_CTX_use_certificate_file',
     'SSL_CTX_get_cert_store',
+    'SSL_CTX_set_cert_store',
     'SSL_CTX_load_verify_locations',
     'SSL_CTX_use_certificate_chain_file',
     'SSL_CTX_set_alpn_protos',
@@ -2830,6 +2845,11 @@ end;
 function SSL_CTX_get_cert_store(p1: PSSL_CTX): PX509_STORE;
 begin
   result := libssl.SSL_CTX_get_cert_store(p1);
+end;
+
+procedure SSL_CTX_set_cert_store(ctx: PSSL_CTX; store: PX509_STORE);
+begin
+  libssl.SSL_CTX_set_cert_store(ctx, store);
 end;
 
 function SSL_CTX_load_verify_locations(ctx: PSSL_CTX; CAfile: PUtf8Char; CApath: PUtf8Char): integer;
@@ -5796,6 +5816,9 @@ function SSL_CTX_use_certificate_file(ctx: PSSL_CTX; _file: PUtf8Char; typ: inte
 
 function SSL_CTX_get_cert_store(p1: PSSL_CTX): PX509_STORE; cdecl;
   external LIB_SSL name _PU + 'SSL_CTX_get_cert_store';
+
+procedure SSL_CTX_set_cert_store(ctx: PSSL_CTX; store: PX509_STORE); cdecl;
+  external LIB_SSL name _PU + 'SSL_CTX_set_cert_store';
 
 function SSL_CTX_load_verify_locations(ctx: PSSL_CTX;
   CAfile: PUtf8Char; CApath: PUtf8Char): integer; cdecl;
@@ -10469,6 +10492,65 @@ begin
   end;
 end;
 
+var
+  DefaultTrustLock: TOSLock;
+  DefaultTrustStore: PX509_STORE;
+  DefaultTrustLoaded: Int64;
+
+procedure OpenSslClearDefaultTrust;
+begin
+  DefaultTrustLock.Lock;
+  try
+    if DefaultTrustStore <> nil then
+    begin
+      X509_STORE_free(DefaultTrustStore);
+      DefaultTrustStore := nil;
+    end;
+  finally
+    DefaultTrustLock.UnLock;
+  end;
+end;
+
+function OpenSslLoadDefaultTrust(ctx: PSSL_CTX; MaxAgeMS: cardinal): integer;
+var
+  now: Int64;
+  store: PX509_STORE;
+begin
+  if MaxAgeMS = 0 then
+  begin
+    result := SSL_CTX_set_default_verify_paths(ctx);
+    exit;
+  end;
+  DefaultTrustLock.Lock;
+  try
+    now := mormot.core.os.GetTickCount64;
+    if (DefaultTrustStore <> nil) and
+       (now >= DefaultTrustLoaded) and
+       (now - DefaultTrustLoaded < MaxAgeMS) then
+    begin
+      result := X509_STORE_up_ref(DefaultTrustStore);
+      if result = OPENSSLSUCCESS then
+        SSL_CTX_set_cert_store(ctx, DefaultTrustStore);
+    end
+    else
+    begin
+      result := SSL_CTX_set_default_verify_paths(ctx);
+      if result = OPENSSLSUCCESS then
+      begin
+        store := SSL_CTX_get_cert_store(ctx);
+        if X509_STORE_up_ref(store) = OPENSSLSUCCESS then
+        begin
+          X509_STORE_free(DefaultTrustStore);
+          DefaultTrustStore := store;
+          DefaultTrustLoaded := mormot.core.os.GetTickCount64;
+        end;
+      end;
+    end;
+  finally
+    DefaultTrustLock.UnLock;
+  end;
+end;
+
 procedure TOpenSslNetTls.SetupCtx(var Context: TNetTlsContext; Bind: boolean);
 var
   v, mode: integer;
@@ -10492,6 +10574,11 @@ begin
     if FileExists(TFileName(Context.CACertificatesFile)) then
       SSL_CTX_load_verify_locations(
         fCtx, pointer(Context.CACertificatesFile), nil)
+    else if not Bind and
+            not Assigned(Context.OnEachPeerVerify) and
+            not Assigned(Context.OnPeerValidate) and
+            not Assigned(Context.OnAfterPeerValidate) then
+      OpenSslLoadDefaultTrust(fCtx)
     else
       SSL_CTX_set_default_verify_paths(fCtx);
     if not Bind then
@@ -10757,6 +10844,7 @@ end;
 
 
 initialization
+  DefaultTrustLock.Init;
   // register the OpenSSL TLS layer factory for TCrtSocket (if no SChannel set)
   {$ifndef FORCE_OPENSSL}
   if not Assigned(NewNetTls) then
@@ -10764,6 +10852,8 @@ initialization
     @NewNetTls := @NewOpenSslNetTls;
 
 finalization
+  OpenSslClearDefaultTrust;
+  DefaultTrustLock.Done;
   {$ifndef OPENSSLSTATIC}
   FreeAndNil(libssl);
   FreeAndNil(libcrypto);

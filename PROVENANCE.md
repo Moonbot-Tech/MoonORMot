@@ -95,6 +95,23 @@ before the first payload move. ZIP64 uses small forced fixtures; files over 4 Gi
 metadata preservation, and filtered updates with reordered central directories are
 outside this qualification. Static binaries and the allocator are unchanged.
 
+## Bounded default OpenSSL trust reuse
+
+Ordinary client connections reuse a reference-counted default CA store for up
+to one hour, with explicit `OpenSslClearDefaultTrust` invalidation. Refresh is
+lazy; each existing SSL_CTX retains its own reference. Custom CA files, servers
+and verification callbacks keep their previous setup. Verification, SNI,
+hostname matching and Windows SChannel behavior are unchanged. Applications
+updating default trust can explicitly clear it; file/env changes otherwise use
+the bounded refresh policy. OpenSSL's lazy CA directory/provider lookups remain.
+
+This is an independently implemented lifetime/TTL cache informed by curl,
+CPython, Go and OpenSSL contracts; no Delphi implementation was copied.
+`tests/tls-trust-cache` covers refresh, ownership, concurrent clear/connect and
+real TLS acceptance/rejection on MoonCompiler Windows/Linux Debug/Release.
+The real-OpenSSL probe and injected ownership failures were also checked with
+Delphi 12.2 Win64. Static binaries and the allocator are unchanged.
+
 ## Optional text-writer buffer growth
 
 `TTextWriter.FlushToStream` retains its current empty buffer when the optional
