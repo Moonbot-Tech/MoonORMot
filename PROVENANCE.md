@@ -155,3 +155,20 @@ tree was not runtime-qualified by these tests.
 and untracked GC publication, and live loopback close/reply behavior with
 MoonCompiler 2.4.6 Debug/Release on Win64 and Linux x86-64. Delphi qualification
 is outside this change. Static binaries and the allocator are unchanged.
+
+
+## Deferred internal pool diagnostics
+
+MoonORMot 17 distinguishes an empty internal small-block pool awaiting medium
+release from a user medium allocation. Internal pools have no user registry
+record. The optional diagnostic verifier checks the owning physical pool, actual
+block boundary, header, empty state and pending-list traversal instead. User
+allocation validation is unchanged; so are ordinary allocation/free instructions
+and relocations. Verification still requires a quiescent heap.
+
+The deterministic [fixture and release gate](https://github.com/Moonbot-Tech/MoonCompiler/blob/2d3e48ad11403feda83c78665b2c7118a946d651/qualification/suite/tests/memory/memory_deferred_small_pool_diagnostic.dpr)
+reproduce the former false failure and check owner, flags, size, nonempty state,
+invalid links, cycles and fabricated interior nodes. Focused Win64/Linux controls
+and the complete Linux allocator qualification passed. Shared-arena controls also
+passed. This diagnostic-only repair does not change static binaries or claim
+new qualification of unrelated mORMot features.
