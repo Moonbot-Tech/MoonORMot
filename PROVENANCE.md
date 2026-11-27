@@ -172,3 +172,17 @@ invalid links, cycles and fabricated interior nodes. Focused Win64/Linux control
 and the complete Linux allocator qualification passed. Shared-arena controls also
 passed. This diagnostic-only repair does not change static binaries or claim
 new qualification of unrelated mORMot features.
+
+
+## MSI product enumeration import
+
+`mormot.lib.sspi` imported `MsiEnumProductA` from msi.dll, which exports no
+such function: the ANSI entry point is `MsiEnumProductsA`. Nothing calls it, so
+a statically linked program never notices, but a dynamic package or a library
+that contains the unit binds every import at load time and fails to load with
+`STATUS_ENTRYPOINT_NOT_FOUND` (0xC0000139). The declaration and the import now
+use the exported name, as upstream mORMot 2 did in commit
+[`9c10749af6f860a88e38f832f001d7c43f86ccec`](https://github.com/synopse/mORMot2/commit/9c10749af6f860a88e38f832f001d7c43f86ccec).
+Checked with a MoonCompiler Win64 dynamic package containing the unit: before
+the change the package did not load, after it the package loads and its imports
+resolve. Static binaries are unchanged.
